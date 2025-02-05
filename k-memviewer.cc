@@ -73,6 +73,7 @@ void memusage::refresh() {
     }
 
     memset(v_, 0, (maxpa / PAGESIZE) * sizeof(*v_));
+    mark(ka2pa(v_), f_kernel);
 
     // mark kernel ranges of physical memory
     // We handle reserved ranges of physical memory separately.
@@ -102,17 +103,27 @@ void memusage::refresh() {
                 }
                 mark(ka2pa(p->pagetable_), f_kernel | f_process(pid));
 
-                for (vmiter it(p, 0); it.low(); ) {
-                    if (it.user()) {
+                for (vmiter it(p, 0); it.low(); ) 
+                {
+                    if (it.user()) 
+                    {
                         mark(it.pa(), f_user | f_process(pid));
                         it.next();
-                    } else {
+                    } 
+                    else 
+                    {
                         it.next_range();
                     }
                 }
             }
             p->unlock_pagetable_read(irqs);
         }
+    }
+
+    for (int i = 0; i < ncpu; i++) 
+    {
+        proc* idlep = cpus[i].idle_task_;
+        mark(ka2pa(idlep), f_kernel);
     }
 }
 
