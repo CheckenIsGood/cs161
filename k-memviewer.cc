@@ -1,11 +1,13 @@
 #include "kernel.hh"
 #include "k-vmiter.hh"
+#include "k-ahci.hh"
 
 // k-memviewer.cc
 //
 //    The `memusage` class tracks memory usage by walking page tables,
 //    looks for errors, and prints the memory map to the console.
 
+extern ahcistate* ahci_;
 
 class memusage {
   public:
@@ -75,6 +77,11 @@ void memusage::refresh() {
     memset(v_, 0, (maxpa / PAGESIZE) * sizeof(*v_));
     mark(ka2pa(v_), f_kernel);
 
+    for (size_t i = 0; i <= sizeof(*ahci_)/PAGESIZE; i++)
+    {
+        mark(ka2pa(ahci_) + PAGESIZE * i, f_kernel);
+    }
+
     // mark kernel ranges of physical memory
     // We handle reserved ranges of physical memory separately.
     for (auto range = physical_ranges.begin();
@@ -122,8 +129,32 @@ void memusage::refresh() {
 
     for (int i = 0; i < ncpu; i++) 
     {
-        proc* idlep = cpus[i].idle_task_;
-        mark(ka2pa(idlep), f_kernel);
+        proc* p = cpus[i].idle_task_;
+        if (p) {
+            mark(ka2pa(p), f_kernel);
+
+            auto irqs = p->lock_pagetable_read();
+            if (p->pagetable_ && p->pagetable_ != early_pagetable) {
+                for (ptiter it(p); it.low(); it.next()) {
+                    mark(it.pa(), f_kernel);
+                }
+                mark(ka2pa(p->pagetable_), f_kernel);
+
+                for (vmiter it(p, 0); it.low(); ) 
+                {
+                    if (it.user()) 
+                    {
+                        mark(it.pa(), f_user);
+                        it.next();
+                    } 
+                    else 
+                    {
+                        it.next_range();
+                    }
+                }
+            }
+            p->unlock_pagetable_read(irqs);
+        }
     }
 }
 

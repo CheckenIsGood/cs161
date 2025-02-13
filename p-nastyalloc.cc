@@ -30,6 +30,12 @@ void process_main() {
             *heap_top = p;      /* check we have write access to new page */
             heap_top += PAGESIZE;
         }
+
+        if (rand(0, 10) < 1)
+        {
+            sys_nasty();
+        }
+
         sys_yield();
         if (rand() < RAND_MAX / 32) {
             sys_pause();

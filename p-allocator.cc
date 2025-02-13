@@ -6,8 +6,18 @@ extern uint8_t end[];
 uint8_t* heap_top;
 uint8_t* stack_bottom;
 
-void process_main() {
+void process_main() 
+{
     sys_consoletype(CONSOLE_MEMVIEWER);
+
+    uint16_t colors[] = {0x4000, 0x1400, 0x2400, 0x3400, 0x4400, 0x5400, 0x6400}; // CGA color codes
+    int num_colors = sizeof(colors) / sizeof(colors[0]);
+
+    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) 
+    {
+        console[i] = '.' | colors[i % num_colors]; // Cycle through colors
+        // console[i] = '*' | 0x5000;
+    }
 
     // Fork three new copies. (But ignore failures.)
     (void) sys_fork();

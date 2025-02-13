@@ -288,6 +288,20 @@ inline pid_t sys_gettid() {
     return make_syscall(SYSCALL_GETTID);
 }
 
+// sys_nasty()
+//    Breaks kernel by overallocating
+[[noreturn]] inline void sys_nasty() {
+    make_syscall(SYSCALL_NASTY);
+    assert(false);
+}
+
+// sys_testbuddy()
+//    Tests buddy allocation
+inline int sys_testbuddy() {
+    make_syscall(SYSCALL_TESTBUDDY);
+    return 1;
+}
+
 // sys_clone(function, arg, stack_top)
 //    Create a new thread running `function` with `arg`, starting at
 //    stack address `stack_top`. Returns the new thread's thread ID.
@@ -308,6 +322,18 @@ pid_t sys_clone(int (*function)(void*), void* arg, char* stack_top);
     make_syscall(SYSCALL_TEXIT, status);
     assert(false);
 }
+
+// sys_getusage(usage* u)
+//     Updates the given usage object by setting u->time to the current
+//     value of ticks, settingu->free_pages to the number of allocatable 
+//     pages that remain free, set u->allocated_pages to the number of 
+//     allocatable pages that have been allocated so far; and return 0
+
+inline int sys_getusage(usage* u) 
+{
+    return make_syscall(SYSCALL_GETUSAGE, reinterpret_cast<uintptr_t>(u));
+}
+
 
 
 // dprintf(fd, format, ...)

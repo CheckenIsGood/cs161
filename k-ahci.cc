@@ -6,6 +6,8 @@
 //
 //    Functions for interacting with advanced SATA disks.
 
+ahcistate* ahci_;
+
 
 // HELPER FUNCTIONS FOR PREPARING, ISSUING, AND ACKNOWLEDGING COMMANDS
 
@@ -348,7 +350,8 @@ ahcistate* ahcistate::find(int addr, int port) {
         for (; port < 32; ++port) {
             if ((dr->port_mask & (1U << port))
                 && dr->p[port].sstatus) {
-                return knew<ahcistate>(addr, port, dr);
+                ahci_ = knew<ahcistate>(addr, port, dr);
+                return ahci_;
             }
         }
     }

@@ -15,6 +15,7 @@ struct yieldstate;
 struct proc_loader;
 struct elf_program;
 #define PROC_RUNNABLE 1
+#define CANARY 0xABCE1234ABCD5678
 
 
 // kernel.hh
@@ -44,7 +45,7 @@ struct __attribute__((aligned(4096))) proc {
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
 
-
+    uintptr_t canary = (uintptr_t) CANARY;
     proc();
     NO_COPY_OR_ASSIGN(proc);
 
@@ -67,11 +68,14 @@ struct __attribute__((aligned(4096))) proc {
     inline bool resumable() const;
     inline void unblock();
 
-    int syscall_fork(regstate* regs);
+    pid_t syscall_fork(regstate* regs);
 
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);
+    void syscall_nasty(regstate* reg);
+    int syscall_getusage(regstate* reg);
+    void syscall_testbuddy(regstate* reg);
 
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
@@ -127,6 +131,7 @@ struct __attribute__((aligned(4096))) cpustate {
     uint64_t gdt_segments_[7];
     x86_64_taskstate taskstate_;
 
+    uintptr_t canary = (uintptr_t) CANARY;
 
     inline cpustate()
         : self_(this) {
@@ -528,3 +533,7 @@ inline void proc::unlock_pagetable_read(irqstate&) {
 // Tell `k-wait.hh` that it may define inline functions when included again
 #define CHICKADEE_PROC_DECLARATION 1
 #endif
+
+size_t kalloc_free_pages();
+
+size_t kalloc_allocated_pages();

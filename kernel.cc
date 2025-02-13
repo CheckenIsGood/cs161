@@ -11,12 +11,24 @@
 //
 //    This is the kernel.
 
+
 // # timer interrupts so far on CPU 0
 std::atomic<unsigned long> ticks;
+spinlock print;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
 
+struct nasty
+{
+    void init()
+    {
+        volatile char nastier[PAGESIZE];
+        for (size_t i = 0; i < sizeof(nastier)/sizeof(char); ++i) {
+            nastier[i] = 0x9;
+        }
+    }
+};
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -160,20 +172,10 @@ void proc::exception(regstate* regs) {
     // return to interrupted context
 }
 
-
-// proc::syscall(regs)
-//    System call handler.
-//
-//    The register values from system call time are stored in `regs`.
-//    The return value from `proc::syscall()` is returned to the user
-//    process in `%rax`.
-
-uintptr_t proc::syscall(regstate* regs) {
+uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
 
-    // Record most recent user-mode %rip.
-    recent_user_rip_ = regs->reg_rip;
-
+    p->recent_user_rip_ = regs->reg_rip;
     switch (regs->reg_rax) {
 
     case SYSCALL_CONSOLETYPE:
@@ -184,7 +186,7 @@ uintptr_t proc::syscall(regstate* regs) {
         return 0;
 
     case SYSCALL_PANIC:
-        panic_at(*regs, "process %d called sys_panic()", id_);
+        panic_at(*regs, "process %d called sys_panic()", p->id_);
         break;                  // will not be reached
 
     case SYSCALL_KTEST:
@@ -194,10 +196,10 @@ uintptr_t proc::syscall(regstate* regs) {
         return -1;
 
     case SYSCALL_GETPID:
-        return id_;
+        return p->id_;
 
     case SYSCALL_YIELD:
-        yield();
+        p->yield();
         return 0;
 
     case SYSCALL_PAGE_ALLOC: {
@@ -206,7 +208,7 @@ uintptr_t proc::syscall(regstate* regs) {
             return -1;
         }
         void* pg = kalloc(PAGESIZE);
-        if (!pg || vmiter(this, addr).try_map(ka2pa(pg), PTE_PWU) < 0) {
+        if (!pg || vmiter(p, addr).try_map(ka2pa(pg), PTE_PWU) < 0) {
             return -1;
         }
         return 0;
@@ -221,16 +223,19 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_FORK:
-        return syscall_fork(regs);
+        return p->syscall_fork(regs);
 
     case SYSCALL_READ:
-        return syscall_read(regs);
+        return p->syscall_read(regs);
 
     case SYSCALL_WRITE:
-        return syscall_write(regs);
+        return p->syscall_write(regs);
+
+    case SYSCALL_GETUSAGE:
+        return p->syscall_getusage(regs);
 
     case SYSCALL_READDISKFILE:
-        return syscall_readdiskfile(regs);
+        return p->syscall_readdiskfile(regs);
 
     case SYSCALL_SYNC: {
         int drop = regs->reg_rdi;
@@ -243,21 +248,289 @@ uintptr_t proc::syscall(regstate* regs) {
         return bufcache::get().sync(drop);
     }
 
+    case SYSCALL_NASTY: 
+    {
+        nasty leak;
+        leak.init();
+        return 0;
+    }
+
+    case SYSCALL_TESTBUDDY:
+    {
+        p->syscall_testbuddy(regs);
+        return 0;
+    }
+
     default:
         // no such system call
-        log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
+        log_printf("%d: no such system call %u\n", p->id_, regs->reg_rax);
         return E_NOSYS;
 
     }
 }
 
+// proc::syscall(regs)
+//    System call handler.
+//
+//    The register values from system call time are stored in `regs`.
+//    The return value from `proc::syscall()` is returned to the user
+//    process in `%rax`.
+
+uintptr_t proc::syscall(regstate* regs)
+{
+    uintptr_t val = syscall_unchecked(regs, this);
+    if (is_cli() && this_cpu())
+    {
+        if (this_cpu()->canary != CANARY)
+        {
+            panic("proc %d: CPU stack canary overwritten", id_);
+        }
+    }
+    if (canary != CANARY)
+    {
+        panic("proc %d: stack canary overwritten", id_);
+    }
+    return val;
+}
+
+void proc::syscall_testbuddy(regstate* reg)
+{
+    // Basic test to test kalloc and kfree
+    void* kalloced[50];
+    for (int i = 0; i < 10; ++i) 
+    {
+        kalloced[i] = kalloc(PAGESIZE);
+    }
+
+    for (int i = 0; i < 10; ++i) 
+    {
+        kfree(kalloced[i]);
+    }
+
+    // Check if large allocations beyond 2MB fail
+    size_t large_test = SIZE_MAX;
+    void* tested = kalloc(large_test);
+    assert(tested == nullptr);
+
+    // Check that large allocations (less than 2MB) go through and we can kfree without problem
+    large_test = (1 << 20) - 1;
+    tested = kalloc(large_test);
+    kfree(tested);
+    tested = kalloc(large_test);
+    kfree(tested);
+
+    // Testing with random kalloc sizes to make sure kalloc and kfree work
+    uint64_t random;
+    for (int i = 0; i < 10; ++i) 
+    {
+        random = rand(1 << 12, 1 << 18);
+        kalloced[i] = kalloc(random);
+    }
+
+    for (int i = 0; i < 10; ++i) 
+    {
+        kfree(kalloced[i]);
+    }
+
+    // Stress testing
+    // NOTE: t
+    for (int i = 0; i < 50; ++i) 
+    {
+        kalloced[i] = kalloc(PAGESIZE);
+    }
+
+    for (int i = 0; i < 50; ++i) 
+    {
+        kfree(kalloced[i]);
+    }
+
+    // Interspersed kallocs and kfrees
+    for (int i = 0; i < 10; ++i)
+    {
+        random = rand(1 << 12, 1 << 18);
+        kalloced[i] = kalloc(random);
+    }
+    for (int i = 5; i < 10; ++i)
+    {
+        kfree(kalloced[i]);
+    }
+    for (int i = 10; i < 15; ++i)
+    {
+        random = rand(1 << 12, 1 << 18);
+        kalloced[i] = kalloc(random);
+    }
+    for (int i = 0; i < 5; ++i)
+    {
+        kfree(kalloced[i]);
+    }
+    for (int i = 10; i < 15; ++i)
+    {
+        kfree(kalloced[i]);
+    }
+    // log_printf("kalloc succeeded!\n");
+    
+    auto irqs = print.lock();
+    console_printf(CS_SUCCESS "kalloc succeeded!\n");
+    print.unlock(irqs);
+    return;
+}
+
+int proc::syscall_getusage(regstate* regs) 
+{
+    auto j = vmiter(ptable[id_], regs->reg_rdi);
+    if (!j.writable() || !j.user() || (regs->reg_rdi % alignof(usage) != 0))
+    {
+    return E_FAULT;
+    }
+    usage* u = reinterpret_cast<usage*>(regs->reg_rdi);
+    u->time = ticks;
+    u->free_pages = kalloc_free_pages();
+    u->allocated_pages = kalloc_allocated_pages();
+    return 0;
+}
+
+// free_process(process)
+//    frees all the memory of a given process
+void free_process(proc* proc) 
+{
+    if (proc->pagetable_)
+    {
+        // free the memory of the process
+        for (vmiter it(proc->pagetable_, 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
+        {
+            if (it.user() && it.va() != CONSOLE_ADDR) 
+            {
+                kfree(it.kptr());
+            }
+        }
+
+        // free the process page table
+        for (ptiter it(proc->pagetable_); !it.done(); it.next()) 
+        {
+            kfree(it.kptr());
+        }
+
+        // ensures that the top pagetable is freed
+        kfree(proc->pagetable_);
+    }
+
+    // set the state of the process to blank
+    proc->pstate_ = proc::ps_blank;
+
+    // test to make sure everything is all set
+    assert(proc->pstate_ == proc::ps_blank);
+}
 
 // proc::syscall_fork(regs)
 //    Handle fork system call.
 
-int proc::syscall_fork(regstate* regs) {
-    (void) regs;
-    return E_NOSYS;
+pid_t proc::syscall_fork(regstate* regs) {
+
+    pid_t child_pid = 0;
+
+    spinlock_guard guard(ptable_lock);
+
+    // find free process slot
+    for (pid_t i = 1; i < NPROC; i++)
+    {
+        if (ptable[i])
+        {
+            if (ptable[i]->pstate_ == ps_blank)
+            {
+                child_pid = i;
+                break;
+            }
+        }
+        else
+        {
+            child_pid = i;
+            ptable[child_pid] = knew<proc>();
+            if (!ptable[child_pid])
+            {
+                return E_NOMEM;
+            }
+            break;
+        }
+    }
+
+    // if no free process slot found, return -1
+    if (child_pid == 0)
+    {
+        return E_AGAIN;
+    }
+
+    ptable[child_pid]->pagetable_ = knew_pagetable();
+    // check if kalloc_pagetable failed
+    if(!ptable[child_pid]->pagetable_)
+    {
+        free_process(ptable[child_pid]);
+        return E_NOMEM;
+    }
+    ptable[child_pid]->init_user(ptable[child_pid]->pagetable_);
+    memcpy(reinterpret_cast<void*>(ptable[child_pid]->regs_), reinterpret_cast<void*>(regs), sizeof(regstate));
+
+    for (vmiter it(ptable[id_], 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
+    {
+        // check if pages are user-accessible
+        if (it.user() && it.va() != CONSOLE_ADDR)
+        {
+            // check if pages are not writable and share pages if they are
+            if (!it.writable())
+            {
+                int r = vmiter(ptable[child_pid]->pagetable_, it.va()).try_map(it.pa(), it.perm());
+
+                // check if mapping fails
+                if (r)
+                {
+                    free_process(ptable[child_pid]);
+                    return E_NOMEM;
+                }
+            }
+            else
+            {
+                void* pa = kalloc(PAGESIZE);
+
+                // check if kalloc fails
+                if (pa)
+                {
+                    memcpy((void*) pa, (void*) pa2ka(it.pa()), PAGESIZE);
+                    unsigned long perm = it.perm();
+                    int r = vmiter(ptable[child_pid]->pagetable_, it.va()).try_map(pa, perm);
+
+                    // check if mapping fails
+                    if (r)
+                    {
+                        free_process(ptable[child_pid]);
+                        return E_NOMEM;
+                    }
+                }
+
+                // if kalloc fails, then free all allocated memory and return -1
+                else
+                {
+                    free_process(ptable[child_pid]);
+                    return E_NOMEM;
+                }
+            }
+        }
+        else
+        {
+            int r = vmiter(ptable[child_pid]->pagetable_, it.va()).try_map(it.va(), it.perm());
+
+            // check if mapping fails
+            if (r)
+            {
+                free_process(ptable[child_pid]);
+                return E_NOMEM;
+            }
+        }
+    }
+    // set registers and state of child process
+    ptable[child_pid]->id_ = child_pid;
+    ptable[child_pid]->pstate_ = PROC_RUNNABLE;
+    ptable[child_pid]->regs_->reg_rax = 0;
+    cpus[child_pid % ncpu].enqueue(ptable[child_pid]);
+    return child_pid;
 }
 
 

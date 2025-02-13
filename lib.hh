@@ -316,6 +316,9 @@ struct bitset_view {
 #define SYSCALL_CLONE           23
 #define SYSCALL_TEXIT           24
 #define SYSCALL_KTEST           25
+#define SYSCALL_GETUSAGE        128
+#define SYSCALL_NASTY           129
+#define SYSCALL_TESTBUDDY       130
 
 // Add new system calls here.
 // Your numbers should be >=128 to avoid conflicts.
