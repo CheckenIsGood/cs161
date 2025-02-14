@@ -109,8 +109,9 @@ inline int sys_consoletype(int type) {
 
 // sys_page_alloc(addr)
 //    Allocate a page of memory at address `addr`. `Addr` must be page-aligned
-//    (i.e., a multiple of PAGESIZE == 4096). Return 0 on success, E_NOMEM on
-//    out of memory, and E_INVAL on invalid `addr`.
+//    (i.e., a multiple of PAGESIZE == 4096). Return 0 on success or an error
+//    code on failure, such as E_NOMEM on out of memory and E_FAULT on invalid
+//    `addr`.
 inline int sys_page_alloc(void* addr) {
     return make_syscall(SYSCALL_PAGE_ALLOC, reinterpret_cast<uintptr_t>(addr));
 }

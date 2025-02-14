@@ -325,6 +325,7 @@ struct bitset_view {
 
 #define E_AGAIN         -11        // Try again
 #define E_BADF          -9         // Bad file number
+#define E_BUSY          -16        // Resource busy
 #define E_CHILD         -10        // No child processes
 #define E_FAULT         -14        // Bad address
 #define E_FBIG          -27        // File too large
