@@ -222,6 +222,34 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return 0;
     }
 
+    case SYSCALL_EXIT:
+    {
+        free_process(p);
+        {
+            spinlock_guard guard(ptable_lock);
+            ptable[p->id_] = nullptr;
+        }
+
+    // Switch to another process
+    this_cpu().schedule();
+        this_cpu().schedule();
+    }
+
+    case SYSCALL_SLEEP:
+    {
+        unsigned ms = regs->reg_rdi;
+        if (ms > 0) 
+        {
+            unsigned long wake_time = ticks + (ms * HZ) / 1000;
+            // Set process state to sleeping
+            p->pstate_ = proc::ps_sleeping;
+            p->wake_time_ = wake_time; // Store the wake-up time
+
+            // Yield to let another process run
+            p->yield();
+        }
+    }
+
     case SYSCALL_FORK:
         return p->syscall_fork(regs);
 
