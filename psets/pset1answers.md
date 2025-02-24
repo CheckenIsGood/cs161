@@ -6,8 +6,6 @@ Leave your name out of this file. Put collaboration notes and credit in
 Answers to written questions
 ----------------------------
 
-Grading notes
--------------
 
 PART A:
 
@@ -51,3 +49,7 @@ PART C:
 
 PART G:
 Wstack-usage does detect the problem as I get a warning about my function's stack usage.
+
+Grading notes
+-------------
+I had to use invlpg because of the TLB entries. Please this took so long to debug. Apparently console_printf is not thread safe and it took hours of debugging with Pranav to figure this out. 
