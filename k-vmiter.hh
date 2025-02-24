@@ -100,6 +100,11 @@ class vmiter {
     // Free mapped page and clear mapping. Like `kfree(kptr()); map(0, 0)`
     inline void kfree_page();
 
+    // Invalidate TLB entry for `va()`
+    inline void invalidate();
+    // Invalidate whole TLB: if this page table is installed, reload it
+    inline void invalidate_all();
+
   private:
     static constexpr int initial_lbits = PAGEOFFBITS + 3 * PAGEINDEXBITS;
     static constexpr int noncanonical_lbits = 47;
@@ -302,6 +307,14 @@ inline void vmiter::kfree_page() {
         kfree(kptr<void*>());
     }
     *pep_ = 0;
+}
+inline void vmiter::invalidate() {
+    invlpg(va());
+}
+inline void vmiter::invalidate_all() {
+    if (rdcr3() == kptr2pa(pt_)) {
+        wrcr3(kptr2pa(pt_));
+    }
 }
 
 inline ptiter::ptiter(const proc* p)
