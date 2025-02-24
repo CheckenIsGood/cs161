@@ -96,6 +96,38 @@ void start_initial_process(pid_t pid, const char* name) {
     cpus[pid % ncpu].enqueue(p);
 }
 
+// free_process(process)
+//    frees all the memory of a given process
+void free_process(proc* proc) 
+{
+    if (proc->pagetable_)
+    {
+        // free the memory of the process
+        for (vmiter it(proc->pagetable_, 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
+        {
+            if (it.user() && it.va() != CONSOLE_ADDR) 
+            {
+                kfree(it.kptr());
+            }
+        }
+
+        // free the process page table
+        for (ptiter it(proc->pagetable_); !it.done(); it.next()) 
+        {
+            kfree(it.kptr());
+        }
+
+        // ensures that the top pagetable is freed
+        kfree(proc->pagetable_);
+    }
+
+    // set the state of the process to blank
+    proc->pstate_ = proc::ps_blank;
+
+    // test to make sure everything is all set
+    assert(proc->pstate_ == proc::ps_blank);
+}
+
 
 // proc::exception(reg)
 //    Exception handler (for interrupts, traps, and faults).
@@ -230,9 +262,8 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             ptable[p->id_] = nullptr;
         }
 
-    // Switch to another process
-    this_cpu().schedule();
-        this_cpu().schedule();
+        // Switch to another process
+        this_cpu()->schedule();
     }
 
     case SYSCALL_SLEEP:
@@ -242,8 +273,8 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         {
             unsigned long wake_time = ticks + (ms * HZ) / 1000;
             // Set process state to sleeping
-            p->pstate_ = proc::ps_sleeping;
-            p->wake_time_ = wake_time; // Store the wake-up time
+            // p->pstate_ = proc::ps_sleeping;
+            // p->wake_time_ = wake_time; // Store the wake-up time
 
             // Yield to let another process run
             p->yield();
@@ -415,38 +446,6 @@ int proc::syscall_getusage(regstate* regs)
     u->free_pages = kalloc_free_pages();
     u->allocated_pages = kalloc_allocated_pages();
     return 0;
-}
-
-// free_process(process)
-//    frees all the memory of a given process
-void free_process(proc* proc) 
-{
-    if (proc->pagetable_)
-    {
-        // free the memory of the process
-        for (vmiter it(proc->pagetable_, 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
-        {
-            if (it.user() && it.va() != CONSOLE_ADDR) 
-            {
-                kfree(it.kptr());
-            }
-        }
-
-        // free the process page table
-        for (ptiter it(proc->pagetable_); !it.done(); it.next()) 
-        {
-            kfree(it.kptr());
-        }
-
-        // ensures that the top pagetable is freed
-        kfree(proc->pagetable_);
-    }
-
-    // set the state of the process to blank
-    proc->pstate_ = proc::ps_blank;
-
-    // test to make sure everything is all set
-    assert(proc->pstate_ == proc::ps_blank);
 }
 
 // proc::syscall_fork(regs)
