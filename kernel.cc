@@ -49,6 +49,9 @@ void kernel_start(const char* command) {
 
     // start running processes
     cpus[0].schedule();
+
+    // halt process
+    process_halt();
 }
 
 
@@ -319,6 +322,12 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         p->syscall_testbuddy(regs);
         return 0;
     }
+
+    case SYSCAL_GETPPID:
+        return p->parent_;
+
+    Case SYSCALL_WAITPID:
+        return p->syscall_waitpid(regs);
 
     default:
         // no such system call
