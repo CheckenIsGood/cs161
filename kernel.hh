@@ -34,6 +34,8 @@ struct __attribute__((aligned(4096))) proc {
     regstate* regs_ = nullptr;                 // Process's current registers
     yieldstate* yields_ = nullptr;             // Process's current yield state
     std::atomic<int> pstate_ = ps_blank;       // Process state
+    wait_queue* waitq_;                         // Process's wait queue
+    bool sleeping_ = false;
 
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
@@ -84,6 +86,7 @@ struct __attribute__((aligned(4096))) proc {
     void syscall_nasty(regstate* reg);
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);
+    pid_t kill_zombie(proc* zombie, int* status);
 
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
@@ -92,7 +95,7 @@ struct __attribute__((aligned(4096))) proc {
     static int load_segment(const elf_program& ph, proc_loader& ld);
 };
 
-#define NPROC 20
+#define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 #define PROCSTACK_SIZE 4096UL
