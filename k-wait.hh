@@ -81,13 +81,18 @@ inline void waiter::prepare(wait_queue& wq) {
     wq.q_.push_back(this);
 }
 
-inline void waiter::maybe_block() {
+inline void waiter::maybe_block() 
+{
     assert(p_ == current() && wq_ != nullptr);
     if(p_->pstate_ == proc::ps_blocked) 
     {
         p_->yield();
     }
-    clear();
+    spinlock_guard g(wq_->lock_);
+    if(links_.is_linked()) 
+    {
+        wq_->q_.erase(this);
+    }
 }
 
 inline void waiter::clear() {
