@@ -26,7 +26,7 @@ struct elf_program;
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
     enum pstate_t {
-        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked
+        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked, ps_zombie
     };
 
     // These four members must come first:
@@ -44,6 +44,13 @@ struct __attribute__((aligned(4096))) proc {
     // Per-CPU run queue, controlled by cpustate::runq_lock_
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
+
+    pid_t ppid_;
+    spinlock ppid_lock_;
+    list_links children_links_;                     // Links for child list
+    list<proc, &proc::children_links_> children_;   // Children of this process
+
+    int status_;
 
     uintptr_t canary = (uintptr_t) CANARY;
     proc();
@@ -69,6 +76,7 @@ struct __attribute__((aligned(4096))) proc {
     inline void unblock();
 
     pid_t syscall_fork(regstate* regs);
+    pid_t syscall_waitpid(proc* cur, pid_t pid, int* status, int options);
 
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);

@@ -14,10 +14,21 @@
 
 // # timer interrupts so far on CPU 0
 std::atomic<unsigned long> ticks;
+proc* init = nullptr;
 spinlock print;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
+
+void init_process()
+{
+    sti();
+    while (init->syscall_waitpid(init, 0, nullptr, W_NOHANG) != E_CHILD)
+    {
+        (void)0;
+    }
+    process_halt();
+}
 
 struct nasty
 {
@@ -44,14 +55,23 @@ void kernel_start(const char* command) {
         ptable[i] = nullptr;
     }
 
+    init = knew<proc>();
+    assert(init);
+    init->init_kernel(init_process);
+    init->ppid_ = 1;
+    init->id_ = 1;
+    {
+        spinlock_guard guard(ptable_lock);
+        assert(!ptable[1]);
+        ptable[1] = init;
+    }
+    cpus[init->id_ % ncpu].enqueue(init);
+
     // start first process
-    start_initial_process(1, CHICKADEE_FIRST_PROCESS);
+    start_initial_process(2, CHICKADEE_FIRST_PROCESS);
 
     // start running processes
     cpus[0].schedule();
-
-    // halt process
-    process_halt();
 }
 
 
@@ -75,6 +95,8 @@ void start_initial_process(pid_t pid, const char* name) {
     // allocate process, initialize registers
     proc* p = knew<proc>();
     p->id_ = pid;
+    p->ppid_ = 1;
+    init->children_.push_back(p);
     p->init_user(pt);
     p->regs_->reg_rip = ld.entry_rip_;
 
@@ -103,32 +125,28 @@ void start_initial_process(pid_t pid, const char* name) {
 //    frees all the memory of a given process
 void free_process(proc* proc) 
 {
-    if (proc->pagetable_)
+    pid_t pid = proc->id_;
+    assert(proc);
+    assert(ptable[pid]->pagetable_);
+    // free the memory of the process
+    for (vmiter it(proc->pagetable_, 0); it.low(); it.next()) 
     {
-        // free the memory of the process
-        for (vmiter it(proc->pagetable_, 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
+        if (it.user() && it.pa() != CONSOLE_ADDR)
         {
-            if (it.user() && it.va() != CONSOLE_ADDR) 
-            {
-                kfree(it.kptr());
-            }
+            it.kfree_page();
         }
-
-        // free the process page table
-        for (ptiter it(proc->pagetable_); !it.done(); it.next()) 
-        {
-            kfree(it.kptr());
-        }
-
-        // ensures that the top pagetable is freed
-        kfree(proc->pagetable_);
     }
 
-    // set the state of the process to blank
-    proc->pstate_ = proc::ps_blank;
+    // free the process page table
+    for (ptiter it(proc->pagetable_); it.low(); it.next())
+    {
+        it.kfree_ptp();
+    }
 
-    // test to make sure everything is all set
-    assert(proc->pstate_ == proc::ps_blank);
+    // ensures that the top pagetable is freed
+    kfree(proc->pagetable_);
+    kfree(proc);
+    ptable[pid] = nullptr;
 }
 
 
@@ -259,29 +277,34 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
     case SYSCALL_EXIT:
     {
-        free_process(p);
         {
             spinlock_guard guard(ptable_lock);
-            ptable[p->id_] = nullptr;
+            spinlock_guard guard2(p->ppid_lock_);
+    
+            // Reparent children
+            proc* child = p->children_.pop_back();
+            while (child) 
+            {
+                spinlock_guard guard3(child->ppid_lock_);
+                child->ppid_ = 1;
+                init->children_.push_back(child);
+                child = p->children_.pop_back();
+            }
+            p->pstate_ = proc::ps_zombie;
+            p->status_ = (int) regs->reg_rdi;
+            for (vmiter it(p->pagetable_, 0); it.low(); it.next())
+                if (it.user() && it.pa() != CONSOLE_ADDR)
+                    it.kfree_page();
         }
-
-        // Switch to another process
-        this_cpu()->schedule();
+        p->yield_noreturn();
     }
 
     case SYSCALL_SLEEP:
     {
-        unsigned ms = regs->reg_rdi;
-        if (ms > 0) 
-        {
-            unsigned long wake_time = ticks + (ms * HZ) / 1000;
-            // Set process state to sleeping
-            // p->pstate_ = proc::ps_sleeping;
-            // p->wake_time_ = wake_time; // Store the wake-up time
-
-            // Yield to let another process run
+        unsigned long time = ticks + round_up((unsigned) regs->reg_rdi, 10)/10;
+        while(long(time - ticks) > 0)
             p->yield();
-        }
+        return 0;
     }
 
     case SYSCALL_FORK:
@@ -323,11 +346,20 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return 0;
     }
 
-    case SYSCAL_GETPPID:
-        return p->parent_;
+    case SYSCALL_GETPPID:
+    {
+        spinlock_guard g(p->ppid_lock_);
+        pid_t ppid = p->ppid_;
+        return p->ppid_;
+    }
 
-    Case SYSCALL_WAITPID:
-        return p->syscall_waitpid(regs);
+    case SYSCALL_WAITPID:
+    {
+        pid_t pid = (pid_t) regs->reg_rdi;
+        int* status = reinterpret_cast<int*>(regs->reg_rsi);
+        int options = (int) regs->reg_rdx;
+        return p->syscall_waitpid(p, pid, status, options);
+    }
 
     default:
         // no such system call
@@ -462,22 +494,13 @@ int proc::syscall_getusage(regstate* regs)
 
 pid_t proc::syscall_fork(regstate* regs) {
 
-    pid_t child_pid = 0;
-
     spinlock_guard guard(ptable_lock);
+    pid_t child_pid = 0;
 
     // find free process slot
     for (pid_t i = 1; i < NPROC; i++)
     {
-        if (ptable[i])
-        {
-            if (ptable[i]->pstate_ == ps_blank)
-            {
-                child_pid = i;
-                break;
-            }
-        }
-        else
+        if (!ptable[i])
         {
             child_pid = i;
             ptable[child_pid] = knew<proc>();
@@ -485,6 +508,7 @@ pid_t proc::syscall_fork(regstate* regs) {
             {
                 return E_NOMEM;
             }
+            ptable[child_pid]->id_ = child_pid;
             break;
         }
     }
@@ -496,12 +520,15 @@ pid_t proc::syscall_fork(regstate* regs) {
     }
 
     ptable[child_pid]->pagetable_ = knew_pagetable();
+
     // check if kalloc_pagetable failed
     if(!ptable[child_pid]->pagetable_)
     {
-        free_process(ptable[child_pid]);
+        kfree(ptable[child_pid]);
+        ptable[child_pid] = nullptr;
         return E_NOMEM;
     }
+
     ptable[child_pid]->init_user(ptable[child_pid]->pagetable_);
     memcpy(reinterpret_cast<void*>(ptable[child_pid]->regs_), reinterpret_cast<void*>(regs), sizeof(regstate));
 
@@ -556,19 +583,83 @@ pid_t proc::syscall_fork(regstate* regs) {
             // check if mapping fails
             if (r)
             {
+                log_printf("Check 1\n");
                 free_process(ptable[child_pid]);
                 return E_NOMEM;
             }
         }
     }
+
+
+
     // set registers and state of child process
-    ptable[child_pid]->id_ = child_pid;
     ptable[child_pid]->pstate_ = PROC_RUNNABLE;
     ptable[child_pid]->regs_->reg_rax = 0;
+
+    {
+        spinlock_guard guard2(ptable[child_pid]->ppid_lock_);
+        spinlock_guard guard3(ppid_lock_);
+        ptable[child_pid]->ppid_ = id_;
+        children_.push_back(ptable[child_pid]);
+    }
+
     cpus[child_pid % ncpu].enqueue(ptable[child_pid]);
     return child_pid;
 }
 
+int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
+{
+    auto irqs = ptable_lock.lock();
+    proc* choice = nullptr;
+    for (proc* a = cur->children_.front(); a; a = cur->children_.next(a))
+    {
+        if (pid == 0 || a->id_ == pid)
+        {
+            choice = a;
+            if (a->pstate_ == proc::ps_zombie)
+                break;
+        }
+    }
+    if (choice == nullptr)
+    {
+        ptable_lock.unlock(irqs);
+        return E_CHILD;
+    }
+    while (choice->pstate_ != proc::ps_zombie)
+    {
+        if (options == W_NOHANG)
+        {
+            ptable_lock.unlock(irqs);
+            return E_AGAIN;
+        }
+        ptable_lock.unlock(irqs);
+        cur->yield();
+        irqs = ptable_lock.lock();
+        for (proc* a = cur->children_.front(); a; a = cur->children_.next(a))
+        {
+            if ((pid == 0 || a->id_ == pid) && (a->pstate_ == proc::ps_zombie))
+            {
+                choice = a;
+                break;
+            }
+        }
+    }
+
+    if (status != nullptr)
+        *status = choice->status_;
+
+    pid_t id = choice->id_;
+    ptable[id] = nullptr;
+    cur->children_.erase(choice);
+        
+    for (ptiter it(choice->pagetable_); it.low(); it.next())
+        it.kfree_ptp();
+    
+    kfree(choice->pagetable_);
+    kfree(choice);
+    ptable_lock.unlock(irqs);
+    return id;
+}
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
 // proc::syscall_readdiskfile(regs)

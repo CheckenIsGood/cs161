@@ -134,14 +134,13 @@ inline pid_t sys_fork() {
 // sys_msleep(msec)
 //    Block for approximately `msec` milliseconds.
 inline int sys_msleep(unsigned msec) {
-    make_syscall(SYSCALL_SLEEP, msec);
-    return E_NOSYS;
+    return make_syscall(SYSCALL_SLEEP, msec);
 }
 
 // sys_getppid()
 //    Return parent process ID.
 inline pid_t sys_getppid() {
-    return E_NOSYS;
+    return make_syscall(SYSCALL_GETPPID);
 }
 
 // sys_waitpid(pid, status, options)
@@ -150,7 +149,7 @@ inline pid_t sys_getppid() {
 //    waits for any child. If `options == W_NOHANG`, returns immediately.
 inline pid_t sys_waitpid(pid_t pid, int* status = nullptr,
                          int options = 0) {
-    return E_NOSYS;
+    return make_syscall(SYSCALL_WAITPID, pid, reinterpret_cast<uintptr_t>(status), options);
 }
 
 // sys_read(fd, buf, sz)

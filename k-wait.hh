@@ -74,9 +74,16 @@ inline waiter::~waiter() {
 }
 
 inline void waiter::prepare(wait_queue& wq) {
+    spinlock_guard g(wq.lock_);
     assert(p_ == current());
     assert(!links_.is_linked());
-    wq_ = &wq;
+    // wq_ = &wq;
+    // p_ = current();
+    // p_->wq_ = wq_;
+    // p_->pstate_ = proc::ps_blocked;
+
+    // wq.q_.push_back(this);
+
     // your code here
 }
 
@@ -87,11 +94,24 @@ inline void waiter::maybe_block() {
     // When the function returns, `p_->pstate_` MUST NOT equal
     // `proc::ps_blocked`, and `links_` MUST NOT be linked.
     // your code here
+    // if(p_->pstate_ == proc::ps_blocked) 
+    // {
+    //     p_->yield();
+    // }
+
+    // spinlock_guard guard(wq_->lock_);
+    // if (links_.is_linked()) 
+    // {
+    //     wq_->q_.erase(this);
+    // }
 }
 
 inline void waiter::clear() {
+    spinlock_guard g(wq_->lock_);
     assert(p_ == current());
     // your code here
+    // wake();
+
 }
 
 inline void waiter::notify() {
