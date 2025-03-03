@@ -596,6 +596,7 @@ pid_t proc::syscall_fork(regstate* regs) {
                     // check if mapping fails
                     if (r)
                     {
+                        kfree(pa);
                         free_process(ptable[child_pid]);
                         return E_NOMEM;
                     }
