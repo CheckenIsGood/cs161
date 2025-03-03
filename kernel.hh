@@ -26,7 +26,7 @@ struct elf_program;
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
     enum pstate_t {
-        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked, ps_zombie
+        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked, ps_zombie, ps_pre_zombie
     };
 
     // These four members must come first:
@@ -34,8 +34,6 @@ struct __attribute__((aligned(4096))) proc {
     regstate* regs_ = nullptr;                 // Process's current registers
     yieldstate* yields_ = nullptr;             // Process's current yield state
     std::atomic<int> pstate_ = ps_blank;       // Process state
-    wait_queue* waitq_;                         // Process's wait queue
-    bool sleeping_ = false;
 
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
@@ -51,8 +49,11 @@ struct __attribute__((aligned(4096))) proc {
     spinlock ppid_lock_;
     list_links children_links_;                     // Links for child list
     list<proc, &proc::children_links_> children_;   // Children of this process
+    wait_queue waitq_;                         // Process's wait queue
 
     int status_;
+    std::atomic<bool> sleeping_ = false;
+    std::atomic<bool> interrupt_ = false;
 
     uintptr_t canary = (uintptr_t) CANARY;
     proc();

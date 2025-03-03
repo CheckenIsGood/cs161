@@ -16,10 +16,9 @@
 std::atomic<unsigned long> ticks;
 proc* init = nullptr;
 spinlock print;
-constexpr size_t TIMER_WHEEL_SIZE = 10;
+spinlock process_hierarchy;
+constexpr size_t TIMER_WHEEL_SIZE = 5;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
-wait_queue c_wait_queue;
-spinlock timer_wheel_lock;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
@@ -29,7 +28,7 @@ void init_process()
     sti();
     while (init->syscall_waitpid(init, 0, nullptr, W_NOHANG) != E_CHILD)
     {
-        (void)0;
+        init->yield();
     }
     process_halt();
 }
@@ -69,7 +68,7 @@ void kernel_start(const char* command) {
         assert(!ptable[1]);
         ptable[1] = init;
     }
-    cpus[init->id_ % ncpu].enqueue(init);
+    cpus[0].enqueue(init);
 
     // start first process
     start_initial_process(2, CHICKADEE_FIRST_PROCESS);
@@ -186,11 +185,6 @@ void proc::exception(regstate* regs) {
             tick();
         }
 
-        {
-            spinlock_guard guard(timer_wheel_lock);
-            timer_wheel[ticks % TIMER_WHEEL_SIZE].notify_all();
-        }
-
         lapicstate::get().ack();
         regs_ = regs;
         yield_noreturn();
@@ -289,41 +283,59 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     {
         {
             spinlock_guard guard(ptable_lock);
-            spinlock_guard guard2(p->ppid_lock_);
-    
             // Reparent children
-            proc* child = p->children_.pop_back();
-            while (child) 
+            p->pstate_ = proc::ps_pre_zombie;
             {
-                spinlock_guard guard3(child->ppid_lock_);
-                child->ppid_ = 1;
-                init->children_.push_back(child);
-                child = p->children_.pop_back();
-            }
-            p->pstate_ = proc::ps_zombie;
-            p->status_ = (int) regs->reg_rdi;
-            for (vmiter it(p->pagetable_, 0); it.low(); it.next())
-            {
-                if (it.user() && it.pa() != CONSOLE_ADDR)
-                {
-                    it.kfree_page();
+                // spinlock_guard guard(process_hierarchy);
+                proc* child = p->children_.pop_back();
+                while (child) {
+                    // spinlock_guard guard3(child->ppid_lock_);
+                    child->ppid_ = 1;
+                    init->children_.push_back(child);
+                    child = p->children_.pop_back();
                 }
+                p->status_ = (int) regs->reg_rdi;
             }
-            c_wait_queue.notify_all();
+            {
+                // spinlock_guard guard(ptable_lock);
+                for (vmiter it(p->pagetable_, 0); it.low(); it.next())
+                {
+                    if (it.user() && it.pa() != CONSOLE_ADDR)
+                    {
+                        it.kfree_page();
+                    }
+                }
+                
+                for (ptiter it(p->pagetable_); it.low(); it.next())
+                    it.kfree_ptp();
+
+                set_pagetable(early_pagetable);
+                delete p->pagetable_;
+                p->pagetable_ = nullptr;
+
+                proc* parent = ptable[p->ppid_];
+                assert(parent);
+                parent->interrupt_ = true; // parent may be in sleep_wq
+                parent->waitq_.notify_all();
+            }
         }
+    
         p->yield_noreturn();
+        assert(false); // should not get here
     }
 
     case SYSCALL_SLEEP:
     {
-        spinlock_guard guard(ptable_lock);
-        p->sleeping_ = true;
-        unsigned long time = ticks + round_up((unsigned) regs->reg_rdi, 10)/10;
+        unsigned long wakeup = ticks + round_up((unsigned) regs->reg_rdi, 10)/10;
         waiter w;
-            w.wait_until(timer_wheel[time % TIMER_WHEEL_SIZE], [&] () {
-                return (long(time - ticks) < 0);
-            }, guard);
-        p->sleeping_ = false;
+        w.wait_until(timer_wheel[wakeup % TIMER_WHEEL_SIZE], [&] () {
+            return (long(wakeup - ticks) <= 0 || p->interrupt_);
+        });
+        if (p->interrupt_) 
+        {
+            p->interrupt_ = false;
+            return E_INTR;
+        }
         return 0;
     }
 
@@ -508,6 +520,41 @@ int proc::syscall_getusage(regstate* regs)
     return 0;
 }
 
+void debug() 
+{   
+    // spinlock_guard guard(ptable_lock);
+    for (pid_t i = 1; i < NPROC; i++)
+    {
+        if (ptable[i])
+        {
+            if (ptable[i]->pstate_ == proc::ps_zombie)
+            {
+                log_printf("Zombie process\n");
+            }
+            if (ptable[i]->pstate_ == proc::ps_pre_zombie)
+            {
+                log_printf("Pre Zombie process\n");
+            }
+            if (ptable[i]->pstate_ == proc::ps_blank)
+            {
+                log_printf("Blank process\n");
+            }
+            if (ptable[i]->pstate_ == proc::ps_runnable)
+            {
+                log_printf("runnable process\n");
+            }
+            if (ptable[i]->pstate_ == proc::ps_blocked)
+            {
+                log_printf("blocked process\n");
+            }
+            if (ptable[i]->pstate_ == proc::ps_faulted)
+            {
+                log_printf("Faulted process\n");
+            }
+        }
+    }
+}   
+
 // proc::syscall_fork(regs)
 //    Handle fork system call.
 
@@ -535,6 +582,7 @@ pid_t proc::syscall_fork(regstate* regs) {
     // if no free process slot found, return -1
     if (child_pid == 0)
     {
+        debug();
         return E_AGAIN;
     }
 
@@ -614,8 +662,8 @@ pid_t proc::syscall_fork(regstate* regs) {
     ptable[child_pid]->regs_->reg_rax = 0;
 
     {
-        spinlock_guard guard2(ptable[child_pid]->ppid_lock_);
-        spinlock_guard guard3(ppid_lock_);
+        // spinlock_guard guard2(ptable[child_pid]->ppid_lock_);
+        // spinlock_guard guard3(process_hierarchy);
         ptable[child_pid]->ppid_ = id_;
         children_.push_back(ptable[child_pid]);
     }
@@ -626,143 +674,69 @@ pid_t proc::syscall_fork(regstate* regs) {
 
 int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 {
-    // waiter w;
-    // auto irqs = ptable_lock.lock();
-    // proc* choice = nullptr;
-    // for (proc* a = cur->children_.front(); a; a = cur->children_.next(a))
-    // {
-    //     if (pid == 0 || a->id_ == pid)
-    //     {
-    //         choice = a;
-    //         if (a->pstate_ == proc::ps_zombie)
-    //             break;
-    //     }
-    // }
-    // if (choice == nullptr)
-    // {
-    //     ptable_lock.unlock(irqs);
-    //     return E_CHILD;
-    // }
-
-    // while (choice->pstate_ != proc::ps_zombie)
-    // {
-    //     if (options == W_NOHANG)
-    //     {
-    //         ptable_lock.unlock(irqs);
-    //         return E_AGAIN;
-    //     }
-
-    //     w.wait_until(c_wait_queue, [&] { return choice->pstate_ == proc::ps_zombie; }, ptable_lock, irqs);
-
-    //     // for (proc* a = cur->children_.front(); a; a = cur->children_.next(a))
-    //     // {
-    //     //     if ((pid == 0 || a->id_ == pid) && (a->pstate_ == proc::ps_zombie))
-    //     //     {
-    //     //         choice = a;
-    //     //         break;
-    //     //     }
-    //     // }
-    // }
-
-    // if (status != nullptr)
-    //     *status = choice->status_;
-
-    // pid_t id = choice->id_;
-    // ptable[id] = nullptr;
-    // cur->children_.erase(choice);
-        
-    // for (ptiter it(choice->pagetable_); it.low(); it.next())
-    //     it.kfree_ptp();
-    
-    // kfree(choice->pagetable_);
-    // kfree(choice);
-    // ptable_lock.unlock(irqs);
-    // return id;
-    spinlock_guard g(ptable_lock);
-
-    proc* child = children_.front();
-    if(!child) {
+    spinlock_guard guard(ptable_lock);
+    proc* choice = nullptr;
+    bool ready = false;
+    {
+        // spinlock_guard guard(process_hierarchy);
+        for (proc* a = children_.front(); a; a = children_.next(a))
+        {
+            if (pid == 0 || a->id_ == pid)
+            {
+                choice = a;
+                if (choice->pstate_ == proc::ps_zombie)
+                {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!choice)
+    {
         return E_CHILD;
     }
-
-    if(pid == 0) {
-        // wait for any child
-        if(options == W_NOHANG) {
-            // iterate once over children looking for zombies
-            while(child) {
-                if(child->pstate_ == proc::ps_zombie) {
-                    return kill_zombie(child, status);
-                }
-                child = children_.next(child);
-            }
-            // W_NOHANG means not blocking
+    
+    if (!ready)
+    {
+        if (options == W_NOHANG)
             return E_AGAIN;
-        }
-
-        // set state to blocked with lock held and release the lock before actually sleeping.
-        // this avoids the lost wakeup problem 
         waiter w;
-        w.wait_until(c_wait_queue, [&] () {
-            child = children_.next(child);
-            // loop back if out of children
-            if(!child) {
-                child = children_.front();
+        w.wait_until(waitq_, [&] () {
+            // spinlock_guard g(process_hierarchy);
+            if (!choice)
+            {
+                choice = children_.front();
             }
-            return child->pstate_ == proc::ps_zombie;
-        }, g);
-
-        // now, child state is ps_nonrunnable, so kill zombie
-        return kill_zombie(child, status);
-    }
-    
-    // wait for specific child with id 'pid'
-    while(child) {
-        if(child->id_ != pid) {
-            child = children_.next(child);
-        } else {
-            // found the child
-            if(options == W_NOHANG) {
-                // don't block
-                if(child->pstate_ != proc::ps_zombie) {
-                    return E_AGAIN;
-                }
-                return kill_zombie(child, status);
+            if ((pid == 0 || choice->id_ == pid) && (choice->pstate_ == proc::ps_zombie))
+            {
+                return true;
             }
-            // block until child exits, releasing ptable_lock while doing so
-            waiter w;
-            w.wait_until(c_wait_queue, [&] () {
-                return (child->pstate_ == proc::ps_zombie);
-            }, g);
-            return kill_zombie(child, status);
-        }
-    }
-    // did not find the child
-    return E_CHILD;
-}
-
-pid_t proc::kill_zombie(proc* zombie, int* status) {
-    // assert that access to ptable and ppid_ is protected
-    assert(ptable_lock.is_locked());
-    // assert zombie is a child of this process
-    assert(zombie->ppid_ == id_);
-    
-    // save zombie's exit status to 'status'
-    if(status) {
-        *status = zombie->status_;
+            if (pid == 0)
+            {
+                choice = children_.next(choice);
+            }
+            return false;
+        }, guard);
     }
 
-    // remove zombie from ptable and children' list
-    pid_t zid = zombie->id_;
-    ptable[zid] = nullptr;
-    children_.erase(zombie);
+    assert(choice);
+    {
+        // spinlock_guard guard(process_hierarchy);
+        children_.erase(choice);
+    }
 
-    for (ptiter it(zombie->pagetable_); it.low(); it.next())
-        it.kfree_ptp();
-    
-    kfree(zombie->pagetable_);
-    kfree(zombie);
-    
-    return zid;
+    if (status != nullptr)
+    {
+        *status = choice->status_;
+    }
+
+    pid_t id = choice->id_;
+    assert(choice != nullptr);
+        
+    delete choice;
+    // ptable[id] = nullptr;
+    return id;
 }
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
@@ -938,6 +912,9 @@ static void memshow() {
 void tick() {
     // Update current time
     ++ticks;
+
+    // Wake up processes that are sleeping
+    timer_wheel[ticks % TIMER_WHEEL_SIZE].notify_all();
 
     // Update display
     if (consoletype == CONSOLE_MEMVIEWER) {

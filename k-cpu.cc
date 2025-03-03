@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-apic.hh"
+#include "k-wait.hh"
 
 cpustate cpus[MAXCPU];
 int ncpu;
@@ -86,11 +87,13 @@ void cpustate::schedule() {
         runq_lock_.lock_noirq();
 
         // reschedule old current if necessary
-        if (prev && prev->pstate_ == proc::ps_runnable) {
+       if (prev && prev->pstate_ == proc::ps_runnable) {
             assert(prev->resumable());
             if (!prev->runq_links_.is_linked()) {
                 runq_.push_back(prev);
             }
+        } else if (prev && prev->pstate_ == proc::ps_pre_zombie) {
+            prev->pstate_ = proc::ps_zombie;
         }
 
         // run idle task as last resort

@@ -76,7 +76,6 @@ inline waiter::~waiter() {
 inline void waiter::prepare(wait_queue& wq) {
     spinlock_guard guard(wq.lock_);
     wq_ = &wq;
-    p_ = current();
     p_->pstate_ = proc::ps_blocked;
     wq.q_.push_back(this);
 }
@@ -88,11 +87,7 @@ inline void waiter::maybe_block()
     {
         p_->yield();
     }
-    spinlock_guard g(wq_->lock_);
-    if(links_.is_linked()) 
-    {
-        wq_->q_.erase(this);
-    }
+    clear();
 }
 
 inline void waiter::clear() {
@@ -102,7 +97,7 @@ inline void waiter::clear() {
     {
         wq_->q_.erase(this);
     }
-    p_->unblock();
+    notify();
 }
 
 inline void waiter::notify() {
