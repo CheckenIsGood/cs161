@@ -17,7 +17,7 @@ std::atomic<unsigned long> ticks;
 proc* init = nullptr;
 spinlock print;
 spinlock process_hierarchy;
-constexpr size_t TIMER_WHEEL_SIZE = 5;
+constexpr size_t TIMER_WHEEL_SIZE = 10;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
 
 static void tick();
@@ -184,7 +184,6 @@ void proc::exception(regstate* regs) {
         if (cpu->cpuindex_ == 0) {
             tick();
         }
-
         lapicstate::get().ack();
         regs_ = regs;
         yield_noreturn();
@@ -307,7 +306,9 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
                 }
                 
                 for (ptiter it(p->pagetable_); it.low(); it.next())
+                {
                     it.kfree_ptp();
+                }
 
                 set_pagetable(early_pagetable);
                 delete p->pagetable_;
@@ -328,6 +329,7 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     {
         unsigned long wakeup = ticks + round_up((unsigned) regs->reg_rdi, 10)/10;
         waiter w;
+        p->interrupt_ = false;
         w.wait_until(timer_wheel[wakeup % TIMER_WHEEL_SIZE], [&] () {
             return (long(wakeup - ticks) <= 0 || p->interrupt_);
         });
@@ -520,41 +522,6 @@ int proc::syscall_getusage(regstate* regs)
     return 0;
 }
 
-void debug() 
-{   
-    // spinlock_guard guard(ptable_lock);
-    for (pid_t i = 1; i < NPROC; i++)
-    {
-        if (ptable[i])
-        {
-            if (ptable[i]->pstate_ == proc::ps_zombie)
-            {
-                log_printf("Zombie process\n");
-            }
-            if (ptable[i]->pstate_ == proc::ps_pre_zombie)
-            {
-                log_printf("Pre Zombie process\n");
-            }
-            if (ptable[i]->pstate_ == proc::ps_blank)
-            {
-                log_printf("Blank process\n");
-            }
-            if (ptable[i]->pstate_ == proc::ps_runnable)
-            {
-                log_printf("runnable process\n");
-            }
-            if (ptable[i]->pstate_ == proc::ps_blocked)
-            {
-                log_printf("blocked process\n");
-            }
-            if (ptable[i]->pstate_ == proc::ps_faulted)
-            {
-                log_printf("Faulted process\n");
-            }
-        }
-    }
-}   
-
 // proc::syscall_fork(regs)
 //    Handle fork system call.
 
@@ -582,7 +549,6 @@ pid_t proc::syscall_fork(regstate* regs) {
     // if no free process slot found, return -1
     if (child_pid == 0)
     {
-        debug();
         return E_AGAIN;
     }
 
@@ -591,7 +557,7 @@ pid_t proc::syscall_fork(regstate* regs) {
     // check if kalloc_pagetable failed
     if(!ptable[child_pid]->pagetable_)
     {
-        kfree(ptable[child_pid]);
+        delete ptable[child_pid];
         ptable[child_pid] = nullptr;
         return E_NOMEM;
     }
@@ -650,7 +616,6 @@ pid_t proc::syscall_fork(regstate* regs) {
             // check if mapping fails
             if (r)
             {
-                log_printf("Check 1\n");
                 free_process(ptable[child_pid]);
                 return E_NOMEM;
             }
@@ -735,7 +700,7 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
     assert(choice != nullptr);
         
     delete choice;
-    // ptable[id] = nullptr;
+    ptable[id] = nullptr;
     return id;
 }
 
