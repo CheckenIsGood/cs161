@@ -46,7 +46,6 @@ struct __attribute__((aligned(4096))) proc {
     int runq_cpu_ = -1;                        // CPU index of recent run queue
 
     pid_t ppid_;
-    spinlock ppid_lock_;
     list_links children_links_;                     // Links for child list
     list<proc, &proc::children_links_> children_;   // Children of this process
     wait_queue waitq_;                         // Process's wait queue

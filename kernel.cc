@@ -665,7 +665,7 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
         }
     }
 
-    // specified pid not found
+    // specified pid not found so return E_CHILD
     if (!child)
     {
         return E_CHILD;
@@ -673,12 +673,15 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 
     else
     {
+
         if (!found)
         {
             if (options == W_NOHANG)
             {
                 return E_AGAIN;
             }
+
+            // wait until a child exits
             if (pid == 0)
             {
                 waiter w;
@@ -697,6 +700,8 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
                     return false;
                 }, guard);
             }
+
+            // wait until the specified pid child exits
             else
             {
                 waiter w;
