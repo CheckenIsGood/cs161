@@ -16,7 +16,7 @@ C. Parent processes: Synchronization plan
 -----------------------------------------
 I used two spinlocks, ``ptable_lock`` and ``family_lock`` to synchronize. I follow a lock hierarchy with the two locks and have ``ptable_lock`` higher in the hierachy (coarser) than ``family_lock``.  My ``ptable_lock`` is used to protect reads/writes/accesses to ``ptable``. The ``family_lock`` synchronizes anything related to parent and children relationships between processes.
 
-The most important synchronization invariant I have is ``ppid_``, which needs to acquire both the ``ptable_lock`` and ``family_lock`` to be accessed. I also use the ``family_lock`` to protect ``list_links children_links_`` and ``list<proc, &proc::children_links_> children_`` accesses I do to reparent.
+The most important synchronization invariant I have is ``ppid_``, which needs to acquire both the ``ptable_lock`` and ``family_lock`` to be accessed. I also use the ``family_lock`` to protect ``list_links children_links_`` and ``list<proc, &proc::children_links_> children_`` accesses I do to reparent. The wait queues also use the ``ptable_lock`` to protect during the predicate and only unlock when I do ``maybe_block`` (all done in ``wait_until``).
 
 
 D. Wait and exit status: Synchronization plan
