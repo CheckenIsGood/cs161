@@ -287,8 +287,11 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     {
         {
             spinlock_guard guard(ptable_lock);
-            p->pstate_ = proc::ps_pre_zombie;
-            {   
+
+            // set process state to zombie
+            p->pstate_ = proc::ps_zombie;
+            {
+                // reparent the children in O(C) time
                 spinlock_guard guard2(family_lock); 
                 proc* child = p->children_.pop_back();
                 while (child) 
@@ -299,6 +302,8 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
                 }
             }
             p->status_ = (int) regs->reg_rdi;
+
+            // clean up
             for (vmiter it(p->pagetable_, 0); it.low(); it.next())
             {
                 if (it.user() && it.pa() != CONSOLE_ADDR)
@@ -323,7 +328,6 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             parent->interrupt_ = true;
             parent->waitq_.notify_all();
         }
-    
         p->yield_noreturn();
     }
 
@@ -332,6 +336,8 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         unsigned long time = ticks + round_up((unsigned) regs->reg_rdi, 10)/10;
         waiter w;
         p->interrupt_ = false;
+
+        // block until time is up or interrupted
         w.wait_until(timer_wheel[time % TIMER_WHEEL_SIZE], [&] () {
             return (long(time - ticks) <= 0 || p->interrupt_);
         });
@@ -386,7 +392,6 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
     case SYSCALL_GETPPID:
     {
-        spinlock_guard guard(ptable_lock);
         spinlock_guard guard2(family_lock);
         return p->ppid_;
     }
@@ -518,7 +523,7 @@ int proc::syscall_getusage(regstate* regs)
     auto j = vmiter(ptable[id_], regs->reg_rdi);
     if (!j.writable() || !j.user() || (regs->reg_rdi % alignof(usage) != 0))
     {
-    return E_FAULT;
+        return E_FAULT;
     }
     usage* u = reinterpret_cast<usage*>(regs->reg_rdi);
     u->time = ticks;
@@ -734,7 +739,11 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 pid_t proc::kill_zombie(proc* zombie, int* status) 
 {
     spinlock_guard guard(family_lock);
+
+    // remove zombie from children linked list
     children_.erase(zombie);
+
+    // update status
     if (status != nullptr)
     {
         *status = zombie->status_;

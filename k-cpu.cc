@@ -92,8 +92,6 @@ void cpustate::schedule() {
             if (!prev->runq_links_.is_linked()) {
                 runq_.push_back(prev);
             }
-        } else if (prev && prev->pstate_ == proc::ps_pre_zombie) {
-            prev->pstate_ = proc::ps_zombie;
         }
 
         // run idle task as last resort
