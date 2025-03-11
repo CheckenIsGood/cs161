@@ -748,6 +748,8 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
     {
         *status = zombie->status_;
     }
+
+    
     pid_t id = zombie->id_;
     assert(zombie != nullptr);
     delete zombie;
