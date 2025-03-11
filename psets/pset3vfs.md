@@ -24,9 +24,9 @@ struct file_descriptor {
 struct vnode {
     spinlock vnode_lock;
     std::atomic<int> dev;           // Device number
-    std::atomic<int> inum;          // Inode number
+    std::atomic<int> vnum;          // Vnode number
     std::atomic<int> ref;            // Reference count
-    std::atomic<int> type;            // Type of inode
+    std::atomic<int> type;            // Type of vnode
 
     filesystem* fs;               // Associated file system
 
