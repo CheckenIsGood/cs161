@@ -5,6 +5,7 @@
 #include "k-list.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
+#include "k-vnode.hh"
 #include "k-wait.hh"
 #include <expected>
 #if CHICKADEE_PROCESS
@@ -16,6 +17,7 @@ struct proc_loader;
 struct elf_program;
 #define PROC_RUNNABLE 1
 #define CANARY 0xABCE1234ABCD5678
+#define NUM_FD 10
 
 
 // kernel.hh
@@ -50,6 +52,8 @@ struct __attribute__((aligned(4096))) proc {
     list<proc, &proc::children_links_> children_;   // Children of this process
     wait_queue waitq_;                         // Process's wait queue
 
+    file_descriptor* fd_table_[NUM_FD] = {nullptr};            // File descriptors
+
     int status_;
     std::atomic<bool> sleeping_ = false;
     std::atomic<bool> interrupt_ = false;
@@ -79,6 +83,9 @@ struct __attribute__((aligned(4096))) proc {
 
     pid_t syscall_fork(regstate* regs);
     pid_t syscall_waitpid(proc* cur, pid_t pid, int* status, int options);
+
+    int syscall_dup2(int oldfd, int newfd);
+    int syscall_close(int fd);
 
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);

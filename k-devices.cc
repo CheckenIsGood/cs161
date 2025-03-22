@@ -175,6 +175,8 @@ void keyboardstate::handle_interrupt() {
         }
     }
 
+    wq_.notify_all();
+
     lock_.unlock(irqs);
     lapicstate::get().ack();
 }

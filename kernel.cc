@@ -19,6 +19,8 @@ spinlock print;
 constexpr size_t TIMER_WHEEL_SIZE = 10;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
 spinlock family_lock;
+static file_descriptor* global_fd_table[32] = {nullptr};
+spinlock global_fd_table_lock;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
@@ -102,6 +104,22 @@ void start_initial_process(pid_t pid, const char* name) {
     init->children_.push_back(p);
     p->init_user(pt);
     p->regs_->reg_rip = ld.entry_rip_;
+
+    {    
+        spinlock_guard guard(global_fd_table_lock);
+        global_fd_table[0] = knew<file_descriptor>();
+        global_fd_table[0]->readable = true;
+        global_fd_table[0]->writable = true;
+        global_fd_table[0]->vnode_ = knew<vnode_kbd_cons>();
+        global_fd_table[0]->vnode_->vn_refcount++;
+
+        // initialize stdin, stdout, stderr of init process
+        for (int i = 0; i < 3; i++) 
+        {
+            p->fd_table_[i] = global_fd_table[0];
+            global_fd_table[0]->ref++;
+        }
+    }
 
     // initialize stack
     void* stkpg = kalloc(PAGESIZE);
@@ -288,6 +306,15 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         {
             spinlock_guard guard(ptable_lock);
 
+
+            for(int fd = 0; fd < NUM_FD; fd++) 
+            {
+                if (p->fd_table_[fd])
+                {
+                    p->syscall_close(fd);
+                }
+            }
+
             // set process state to zombie
             p->pstate_ = proc::ps_zombie;
             {
@@ -402,6 +429,16 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         int* status = reinterpret_cast<int*>(regs->reg_rsi);
         int options = (int) regs->reg_rdx;
         return p->syscall_waitpid(p, pid, status, options);
+    }
+
+    case SYSCALL_DUP2: 
+    {
+        return p->syscall_dup2(regs->reg_rdi, regs->reg_rsi);
+    }
+ 
+    case SYSCALL_CLOSE: 
+    {
+        return p->syscall_close(regs->reg_rdi);
     }
 
     default:
@@ -633,12 +670,22 @@ pid_t proc::syscall_fork(regstate* regs) {
         }
     }
 
+    for (int i = 0; i < NUM_FD; i++)
+    {
+        if (fd_table_[i])
+        {
+            spinlock_guard guard2(fd_table_[i]->file_descriptor_lock);
+            ptable[child_pid]->fd_table_[i] = fd_table_[i];
+            ++fd_table_[i]->ref;
+        }
+    }
+
     // set registers and state of child process
     ptable[child_pid]->pstate_ = PROC_RUNNABLE;
     ptable[child_pid]->regs_->reg_rax = 0;
 
     {
-        spinlock_guard guard2(family_lock);
+        spinlock_guard guard3(family_lock);
         ptable[child_pid]->ppid_ = id_;
         children_.push_back(ptable[child_pid]);
     }
@@ -757,6 +804,70 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
     return id;
 }
 
+int proc::syscall_dup2(int oldfd, int newfd)
+{
+    if (oldfd == newfd)
+    {
+        return oldfd;
+    }
+
+    if (oldfd < 0 || oldfd >= NUM_FD || !fd_table_[oldfd] || newfd < 0 || newfd >= NUM_FD)
+    {
+        return E_BADF;
+    }
+
+    if (fd_table_[newfd])
+    {
+        syscall_close(newfd);
+    }
+
+    fd_table_[newfd] = fd_table_[oldfd];
+    spinlock_guard guard(fd_table_[newfd]->file_descriptor_lock);
+    ++fd_table_[newfd]->ref;
+    return newfd;
+}
+
+int proc::syscall_close(int fd)
+{
+    spinlock_guard guard(global_fd_table_lock);
+    if (fd < 0 || fd >= NUM_FD)
+    {
+        return E_BADF;
+    }
+
+    file_descriptor* close_fd = fd_table_[fd];
+
+    if (!close_fd)
+    {
+        return E_BADF;
+    }
+
+    fd_table_[fd] = nullptr;
+    spinlock_guard guard2(close_fd->file_descriptor_lock);
+
+    close_fd->ref--;
+    if(close_fd->ref == 0) 
+    {
+        spinlock_guard g(close_fd->vnode_->vn_lock);
+        --close_fd->vnode_->vn_refcount;
+        if(close_fd->vnode_->vn_refcount == 0) 
+        {
+            kfree(close_fd->vnode_);
+        }
+
+        for (int i = 0; i < 32; i++)
+        {
+            if (global_fd_table[i] == close_fd)
+            {
+                global_fd_table[i] = nullptr;
+            }
+        }
+ 
+        kfree(close_fd);
+    }
+    return 0;
+}
+
 // proc::syscall_read(regs), proc::syscall_write(regs),
 // proc::syscall_readdiskfile(regs)
 //    Handle read and write system calls.
@@ -765,70 +876,56 @@ uintptr_t proc::syscall_read(regstate* regs) {
     // This is a slow system call, so allow interrupts by default
     sti();
 
+    int fd = regs->reg_rdi;
     uintptr_t addr = regs->reg_rsi;
     size_t sz = regs->reg_rdx;
 
-    // Your code here!
-    // * Read from open file `fd` (reg_rdi), rather than `keyboardstate`.
-    // * Validate the read buffer.
-    auto& kbd = keyboardstate::get();
-    auto irqs = kbd.lock_.lock();
+    if(!sz) return 0;
 
-    // mark that we are now reading from the keyboard
-    // (so `q` should not power off)
-    if (kbd.state_ == kbd.boot) {
-        kbd.state_ = kbd.input;
+    // check for integer overflow
+    if(addr + sz < addr || sz == SIZE_MAX) {
+        return E_FAULT;
     }
 
-    // yield until a line is available
-    // (special case: do not block if the user wants to read 0 bytes)
-    while (sz != 0 && kbd.eol_ == 0) {
-        kbd.lock_.unlock(irqs);
-        yield();
-        irqs = kbd.lock_.lock();
+    // test that file descriptor is present and readable
+    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->readable) {
+        return E_BADF;
     }
 
-    // read that line or lines
-    size_t n = 0;
-    while (kbd.eol_ != 0 && n < sz) {
-        if (kbd.buf_[kbd.pos_] == 0x04) {
-            // Ctrl-D means EOF
-            if (n == 0) {
-                kbd.consume(1);
-            }
-            break;
-        } else {
-            *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
-            ++addr;
-            ++n;
-            kbd.consume(1);
-        }
+    // test that memory range is present, writable, and user-accessible
+    if(!(vmiter(this, addr).range_perm(sz, PTE_PWU))) {
+        return E_FAULT;
     }
 
-    kbd.lock_.unlock(irqs);
-    return n;
+    return fd_table_[fd]->vnode_->read(fd_table_[fd], addr, sz);
+    
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
     // This is a slow system call, so allow interrupts by default
     sti();
 
+    int fd = regs->reg_rdi;
     uintptr_t addr = regs->reg_rsi;
     size_t sz = regs->reg_rdx;
 
-    // Your code here!
-    // * Write to open file `fd` (reg_rdi), rather than `consolestate`.
-    // * Validate the write buffer.
-    auto& csl = consolestate::get();
-    spinlock_guard guard(csl.lock_);
-    size_t n = 0;
-    while (n < sz) {
-        int ch = *reinterpret_cast<const char*>(addr);
-        ++addr;
-        ++n;
-        console_printf(CS_WHITE "%c", ch);
+    if(!sz) return 0;
+
+    // check for integer overflow
+    if(addr + sz < addr || sz == SIZE_MAX) {
+        return E_FAULT;
     }
-    return n;
+
+    // test that file descriptor is present and writable
+    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->writable) {
+        return E_BADF;
+    }
+
+    // check for present and user-accessible memory
+    if(!(vmiter(this, addr).range_perm(sz, PTE_P | PTE_U))) {
+        return E_FAULT;
+    }
+    return fd_table_[fd]->vnode_->write(fd_table_[fd], addr, sz);
 }
 
 uintptr_t proc::syscall_readdiskfile(regstate* regs) {
