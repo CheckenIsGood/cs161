@@ -53,6 +53,7 @@ struct __attribute__((aligned(4096))) proc {
     wait_queue waitq_;                         // Process's wait queue
 
     file_descriptor* fd_table_[NUM_FD] = {nullptr};            // File descriptors
+    spinlock fd_table_lock;
 
     int status_;
     std::atomic<bool> sleeping_ = false;

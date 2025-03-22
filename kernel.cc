@@ -113,6 +113,8 @@ void start_initial_process(pid_t pid, const char* name) {
         global_fd_table[0]->vnode_ = knew<vnode_kbd_cons>();
         global_fd_table[0]->vnode_->vn_refcount++;
 
+        spinlock_guard guard2(p->fd_table_lock);
+
         // initialize stdin, stdout, stderr of init process
         for (int i = 0; i < 3; i++) 
         {
@@ -305,14 +307,18 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     {
         {
             spinlock_guard guard(ptable_lock);
-
-
-            for(int fd = 0; fd < NUM_FD; fd++) 
             {
-                if (p->fd_table_[fd])
+                auto irqs = p->fd_table_lock.lock();
+                for(int fd = 0; fd < NUM_FD; fd++) 
                 {
-                    p->syscall_close(fd);
+                    if (p->fd_table_[fd])
+                    {
+                        p->fd_table_lock.unlock(irqs);
+                        p->syscall_close(fd);
+                        irqs = p->fd_table_lock.lock();
+                    }
                 }
+                p->fd_table_lock.unlock(irqs);
             }
 
             // set process state to zombie
@@ -670,13 +676,16 @@ pid_t proc::syscall_fork(regstate* regs) {
         }
     }
 
-    for (int i = 0; i < NUM_FD; i++)
     {
-        if (fd_table_[i])
+        spinlock_guard table_guard(fd_table_lock);    
+        for (int i = 0; i < NUM_FD; i++)
         {
-            spinlock_guard guard2(fd_table_[i]->file_descriptor_lock);
-            ptable[child_pid]->fd_table_[i] = fd_table_[i];
-            ++fd_table_[i]->ref;
+            if (fd_table_[i])
+            {
+                spinlock_guard guard2(fd_table_[i]->file_descriptor_lock);
+                ptable[child_pid]->fd_table_[i] = fd_table_[i];
+                ++fd_table_[i]->ref;
+            }
         }
     }
 
@@ -811,25 +820,32 @@ int proc::syscall_dup2(int oldfd, int newfd)
         return oldfd;
     }
 
+    auto irqs = fd_table_lock.lock();
     if (oldfd < 0 || oldfd >= NUM_FD || !fd_table_[oldfd] || newfd < 0 || newfd >= NUM_FD)
     {
+        fd_table_lock.unlock(irqs);
         return E_BADF;
     }
 
     if (fd_table_[newfd])
     {
+        fd_table_lock.unlock(irqs);
         syscall_close(newfd);
+        irqs = fd_table_lock.lock();
     }
 
     fd_table_[newfd] = fd_table_[oldfd];
-    spinlock_guard guard(fd_table_[newfd]->file_descriptor_lock);
+    auto irqs2 = fd_table_[newfd]->file_descriptor_lock.lock();
     ++fd_table_[newfd]->ref;
+    fd_table_[newfd]->file_descriptor_lock.unlock(irqs2);
+    fd_table_lock.unlock(irqs);
     return newfd;
 }
 
 int proc::syscall_close(int fd)
 {
     spinlock_guard guard(global_fd_table_lock);
+    spinlock_guard table_guard(fd_table_lock);
     if (fd < 0 || fd >= NUM_FD)
     {
         return E_BADF;
