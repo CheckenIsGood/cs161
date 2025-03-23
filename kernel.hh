@@ -88,6 +88,8 @@ struct __attribute__((aligned(4096))) proc {
     int syscall_dup2(int oldfd, int newfd);
     int syscall_close(int fd);
 
+    int allocate_fd(int vnode_type, bool readable, bool writable);
+    uintptr_t syscall_pipe();
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);

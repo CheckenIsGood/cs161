@@ -1,6 +1,7 @@
 #ifndef CHICKADEE_K_VNODE_HH
 #define CHICKADEE_K_VNODE_HH
 #include "kernel.hh"
+#include "k-wait.hh"
 
 struct vnode;
 struct vnode_pipe;
@@ -8,6 +9,7 @@ struct vnode_memfile;
 struct vnode_disk;
 struct vnode_kbd_cons;
 struct file_descriptor;
+struct bbuffer;
 
 struct vnode
 {
@@ -60,6 +62,20 @@ struct file_descriptor
     vnode* vnode_;
     std::atomic<off_t> read_offset = 0;
     std::atomic<off_t> write_offset = 0;
+};
+
+struct bbuffer {
+    spinlock lock_;
+    wait_queue wq_;
+    static constexpr size_t bcapacity = 128;
+    char bbuf_[bcapacity];
+    size_t bpos_ = 0;
+    size_t blen_ = 0;
+    bool write_closed_ = false;
+    bool read_closed_ = false;
+
+    ssize_t read(char* buf, size_t sz);
+    ssize_t write(const char* buf, size_t sz);
 };
 
 #endif

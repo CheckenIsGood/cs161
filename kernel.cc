@@ -447,6 +447,11 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return p->syscall_close(regs->reg_rdi);
     }
 
+    case SYSCALL_PIPE: 
+    {
+        return p->syscall_pipe();
+    }
+
     default:
         // no such system call
         log_printf("%d: no such system call %u\n", p->id_, regs->reg_rax);
@@ -827,6 +832,8 @@ int proc::syscall_dup2(int oldfd, int newfd)
         return E_BADF;
     }
 
+    auto replace = fd_table_[oldfd];
+
     if (fd_table_[newfd])
     {
         fd_table_lock.unlock(irqs);
@@ -834,7 +841,9 @@ int proc::syscall_dup2(int oldfd, int newfd)
         irqs = fd_table_lock.lock();
     }
 
-    fd_table_[newfd] = fd_table_[oldfd];
+    fd_table_[newfd] = replace;
+
+    // maybe move this up there for the future
     auto irqs2 = fd_table_[newfd]->file_descriptor_lock.lock();
     ++fd_table_[newfd]->ref;
     fd_table_[newfd]->file_descriptor_lock.unlock(irqs2);
@@ -864,6 +873,26 @@ int proc::syscall_close(int fd)
     close_fd->ref--;
     if(close_fd->ref == 0) 
     {
+        if (close_fd->vnode_->type_ == vnode::pipe)
+        {
+            bbuffer* bounded_buffer = reinterpret_cast<bbuffer*>(close_fd->vnode_->data);
+            if (close_fd->writable)
+            {
+                bounded_buffer->write_closed_ = true;
+                bounded_buffer->wq_.notify_all();
+            }
+            if (close_fd->readable)
+            {
+                bounded_buffer->read_closed_ = true;
+                bounded_buffer->wq_.notify_all();
+            }
+            if (bounded_buffer->write_closed_ && bounded_buffer->read_closed_)
+            {
+                kfree(close_fd->vnode_->data);
+                close_fd->vnode_->data = nullptr;
+            }
+        }
+
         spinlock_guard g(close_fd->vnode_->vn_lock);
         --close_fd->vnode_->vn_refcount;
         if(close_fd->vnode_->vn_refcount == 0) 
@@ -882,6 +911,100 @@ int proc::syscall_close(int fd)
         kfree(close_fd);
     }
     return 0;
+}
+
+
+int proc::allocate_fd(int vnode_type, bool readable, bool writable)
+{
+    spinlock_guard guard(global_fd_table_lock);
+    spinlock_guard guard2(fd_table_lock);
+    int global_fd = -1;
+    for (int i = 0; i < 32; i++)
+    {
+        if (!global_fd_table[i])
+        {
+            global_fd = i;
+            break;
+        }
+    }
+
+    if (global_fd == -1)
+    {
+        return E_MFILE;
+    }
+
+    int proc_fd = -1;
+
+    for (int i = 0; i < NUM_FD; i++)
+    {
+        if (!fd_table_[i])
+        {
+            proc_fd = i;
+            break;
+        }
+    }
+
+    if (proc_fd == -1)
+    {
+        return E_NFILE;
+    }
+
+    if (vnode_type == vnode::pipe)
+    {
+        file_descriptor* fd = knew<file_descriptor>();
+        if (!fd)
+        {
+            return E_NOMEM;
+        }
+        fd->readable = readable;
+        fd->writable = writable;
+        fd->ref++;
+        fd_table_[proc_fd] = fd;
+        global_fd_table[global_fd] = fd;
+    }
+    return proc_fd;
+}
+
+uintptr_t proc::syscall_pipe()
+{
+    int rfd = allocate_fd(vnode::pipe, true, false);
+    if (rfd < 0)
+    {
+        return rfd;
+    }
+
+    int wfd = allocate_fd(vnode::pipe, false, true);
+    if (wfd < 0)
+    {
+        syscall_close(rfd);
+        return wfd;
+    }
+
+    auto vnode = knew<vnode_pipe>();
+
+    if (!vnode)
+    {
+        syscall_close(rfd);
+        syscall_close(wfd);
+        return E_NOMEM;
+    }
+
+    auto bounder_buffer = knew<bbuffer>();
+
+    if (!bounder_buffer)
+    {
+        kfree(vnode);
+        syscall_close(rfd);
+        syscall_close(wfd);
+        return E_NOMEM;
+    }
+
+    vnode->data = bounder_buffer;
+    vnode->vn_refcount = 2;
+    fd_table_[rfd]->vnode_ = vnode;
+    fd_table_[wfd]->vnode_ = vnode;
+
+    return rfd | ((uintptr_t) wfd << 32);
 }
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
