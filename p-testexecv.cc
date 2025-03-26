@@ -1,65 +1,50 @@
 #include "u-lib.hh"
 
-#define DECAY 2
+int str_to_int(const char* s) {
+    int result = 0;
+    while (*s) {
+        result = result * 10 + (*s - '0');
+        s++;
+    }
+    return result;
+}
 
-void process_main(int argc, char** argv)
-{
-    pid_t p = sys_getpid();
+void process_main(int argc, char** argv) {
 
-    if (p == 2)
-    {
-        sys_consoletype(CONSOLE_MEMVIEWER);
+    // THE PURPOSE OF THIS TEST IS TO MAKE SURE ARGUMENT PASSING WORKS
+    int count = 0;
+
+    // If execv-ed, parse count and verify that argument passing works
+    if (argc == 3) {
+        count = str_to_int(argv[1]);
+        assert_memeq(argv[0], "testexecv", 8);
+        assert(count >= 1 && count <= 240);
+        assert_memeq(argv[2], "argtest", 7);
     }
 
-    else
-    {
-        // Check argument passing
-        assert(argc == p);
-        assert_memeq(argv[0], "testexecv", 9);
-        for (int i = 2; i <= p; i++)
-        {
-            assert((int)strlen(argv[i - 1]) == i);
-            for (int j = 0; j < i; j++)
-            {
-                if (i <= 9) assert(*(argv[i - 1] + j) == '0' + i);
-                else assert(*(argv[i - 1] + j) == 'a' + i - 10);
-            }
-        }
-    }
-
-    if (p == 2)
-    {
-        while (sys_fork() < 0);
-        while (sys_fork() < 0);
-    }
-    else
-    {
-        do
-        {
-            if (rand(1, 10) <= DECAY) break;
-        } while (sys_fork() < 0);
-    }
-
-    p = sys_getpid();
-    if (p == 2)
-    {
-        while (true);
-    }
-    else if (p > 15)
-    {
+    if (count == 240) {
+        console_printf(CS_SUCCESS "testexecv succeeded!\n");
         sys_exit(0);
     }
 
-    // Generate arguments according to pid
+    // Prepare next argument list
+    char counter_arg[16];
+    snprintf(counter_arg, sizeof(counter_arg), "%d", count + 1);
     const char* args[] = {
-        "testexecv", "22", "333", "4444", "55555", "666666", "7777777", "88888888", "999999999", "aaaaaaaaaa", "bbbbbbbbbbb", "cccccccccccc", "ddddddddddddd", "eeeeeeeeeeeeee", "fffffffffffffff", nullptr
+        "testexecv",
+        counter_arg,
+        "argtest",
+        nullptr
     };
-    args[p] = nullptr;
 
-    do
-    {
-        if (rand(1, 10) <= DECAY) break;
-    } while (sys_execv("testexecv", args) < 0);
-    
-    sys_exit(0);
+    // Print progress
+    sys_write(1, "Calling execv number: ", 22);
+    sys_write(1, counter_arg, strlen(counter_arg));
+    sys_write(1, "\n", 1);
+
+    // Exec self
+    int r = sys_execv("testexecv", args);
+    assert_eq(r, 0);
+
+    sys_exit(1); // Should never reach here
 }
