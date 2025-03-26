@@ -3,30 +3,28 @@ CS 161 Problem Set 3 VFS Design Document
 
 ```c++
 
-#define FILETYPE_WRITE (1 << 0) // none
-#define FILETYPE_READ (1 << 1) // pipe
-#define VNODETYPE_TTY 1;
-#define VNODETYPE_FILE 2;
-#define VNODETYPE_DIR 3;
-#define VNODETYPE_PIPE 4;
-
 
 struct file_descriptor {
-    int file_type;
-    spinlock file_descriptor_lock;
-    std::atomic<int> ref = 0;
-    std::atomic<bool> readable;
-    std::atomic<bool> writable;
-    vnode* vnode = nullptr;
-    std::atomic<off_t> offset = 0;
+    spinlock file_descriptor_lock;              // Lock to protect file descriptor access
+    int ref = 0;                                // Reference count for this descriptor
+    bool readable;                              // Whether file descriptor is readable
+    bool writable;                              // Whether file descriptor is writable
+    vnode* vnode_ = nullptr;                    // Pointer to associated vnode object
+    off_t read_offset = 0;                      // Current read offset
+    off_t write_offset = 0;                     // Current write offset (for sequential writes)
 };
 
 struct vnode {
     spinlock vnode_lock;
-    std::atomic<int> dev;           // Device number
-    std::atomic<int> vnum;          // Vnode number
-    std::atomic<int> ref;            // Reference count
-    std::atomic<int> type;            // Type of vnode
+    // vnode types
+    enum vnode_type {
+        VNODETYPE_PIPE, VNODETYPE_TTY, VNODETYPE_DIR, VNODETYPE_FILE
+    };
+    vnode_type type_;
+    int vn_refcount = 0;                        // Reference count for vnode lifetime management
+    spinlock vn_lock;                           // Lock for protecting vnode fields
+    void* data = nullptr;                       // Pointer to vnode-specific data (if any)
+    vnode(vnode_type t) : type_(t) {}
 
     filesystem* fs;               // Associated file system
 

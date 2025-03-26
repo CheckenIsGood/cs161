@@ -11,15 +11,17 @@ struct vnode_kbd_cons;
 struct file_descriptor;
 struct bbuffer;
 
+
 struct vnode
 {
+    // vnode types
     enum vnode_type {
-        pipe, memfile, disk, kbd_cons
+        v_pipe, v_memfile, disk, kbd_cons
     };
     vnode_type type_;
-    int vn_refcount = 0;
-    spinlock vn_lock;
-    void* data = nullptr;
+    int vn_refcount = 0;                        // Reference count for vnode lifetime management
+    spinlock vn_lock;                           // Lock for protecting vnode fields
+    void* data = nullptr;                       // Pointer to vnode-specific data (if any)
     vnode(vnode_type t) : type_(t) {}
     virtual uintptr_t read(file_descriptor* f, uintptr_t addr, size_t sz) = 0;
     virtual uintptr_t write(file_descriptor* f, uintptr_t addr, size_t sz) = 0;
@@ -27,14 +29,14 @@ struct vnode
 
 struct vnode_pipe : public vnode
 {
-    vnode_pipe() : vnode(vnode::pipe) {}
+    vnode_pipe() : vnode(vnode::v_pipe) {}
     uintptr_t read(file_descriptor* f, uintptr_t addr, size_t sz) override;
     uintptr_t write(file_descriptor* f, uintptr_t addr, size_t sz) override;
 };
 
 struct vnode_memfile : public vnode
 {
-    vnode_memfile() : vnode(vnode::memfile) {}
+    vnode_memfile() : vnode(vnode::v_memfile) {}
     uintptr_t read(file_descriptor* f, uintptr_t addr, size_t sz) override;
     uintptr_t write(file_descriptor* f, uintptr_t addr, size_t sz) override;
 };
@@ -55,15 +57,17 @@ struct vnode_kbd_cons : public vnode
 
 struct file_descriptor 
 {
-    spinlock file_descriptor_lock;
-    std::atomic<int> ref = 0;
-    std::atomic<bool> readable;
-    std::atomic<bool> writable;
-    vnode* vnode_;
-    std::atomic<off_t> read_offset = 0;
-    std::atomic<off_t> write_offset = 0;
+    spinlock file_descriptor_lock;              // Lock to protect file descriptor access
+    int ref = 0;                                // Reference count for this descriptor
+    bool readable;                              // Whether file descriptor is readable
+    bool writable;                              // Whether file descriptor is writable
+    vnode* vnode_ = nullptr;                    // Pointer to associated vnode object
+    off_t read_offset = 0;                      // Current read offset
+    off_t write_offset = 0;                     // Current write offset (for sequential writes)
 };
 
+
+// Bounded buffer used for pipes or buffered IO (largely taken from CS61)
 struct bbuffer {
     spinlock lock_;
     wait_queue wq_;

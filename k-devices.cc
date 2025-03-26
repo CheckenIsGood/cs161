@@ -16,6 +16,8 @@
 
 // Unfortunately mapping PC key codes to ASCII takes a lot of work.
 
+spinlock initfs_lock_;               // lock for `initfs`
+
 #define MOD_SHIFT       (1 << 0)
 #define MOD_CONTROL     (1 << 1)
 #define MOD_CAPSLOCK    (1 << 3)
@@ -131,7 +133,7 @@ void keyboardstate::handle_interrupt() {
         switch (ch) {
         case 0: // try again
             break;
-
+        
         case 0x08: // Ctrl-H
             if (eol_ < len_) {
                 --len_;
@@ -255,11 +257,16 @@ void consolestate::cursor(bool show) {
 //    `memfile::initfs_size`. If not found, the behavior depends on
 //    `flag`.
 int memfile::initfs_lookup(const char* name, lookup_flag flag) {
+
+    // initfs_lock_ must be held by the caller
+    assert(initfs_lock_.is_locked());
     memfile* empty = nullptr;
     size_t namelen = min(strlen(name), size_t(namesize) - 1);
 
     // search for a file named `name`
-    for (memfile* f = initfs; f != initfs + initfs_size; ++f) {
+    for (memfile* f = initfs; f != initfs + initfs_size; ++f) 
+    {
+        spinlock_guard guard(f->lock_);
         if (!f->empty()
             && memcmp(f->name_, name, namelen) == 0
             && f->name_[namelen] == 0) {
@@ -283,6 +290,7 @@ int memfile::initfs_lookup(const char* name, lookup_flag flag) {
         // name too long for `memfile::name_`
         return E_NAMETOOLONG;
     } else {
+        spinlock_guard(empty->lock_);
         memcpy(empty->name_, name, namelen);
         empty->name_[namelen] = 0;
         empty->data_ = nullptr;
@@ -299,6 +307,9 @@ int memfile::initfs_lookup(const char* name, lookup_flag flag) {
 //    failure.
 int memfile::set_length(size_t len) {
     // grow file if necessary
+
+    // lock_ must be held by the caller 
+    assert(lock_.is_locked());
     if (len > capacity_) {
         // allocate new data
         if (len > size_t(SSIZE_MAX)) { // too large for safe round_up_pow2
@@ -335,6 +346,7 @@ int memfile::set_length(size_t len) {
 // `memfile`. See `k-proc.cc` for more on `proc_loader`s.
 
 auto memfile_loader::get_page(size_t off) -> get_page_type {
+    spinlock_guard guard(memfile_->lock_);
     if (!memfile_) {
         return std::unexpected(E_NOENT);
     } else if (off >= memfile_->len_) {

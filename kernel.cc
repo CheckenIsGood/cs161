@@ -19,8 +19,9 @@ spinlock print;
 constexpr size_t TIMER_WHEEL_SIZE = 10;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
 spinlock family_lock;
-static file_descriptor* global_fd_table[32] = {nullptr};
+file_descriptor* global_fd_table[32] = {nullptr};
 spinlock global_fd_table_lock;
+extern spinlock initfs_lock_;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
@@ -88,6 +89,7 @@ void kernel_start(const char* command) {
 
 void start_initial_process(pid_t pid, const char* name) {
     // look up process image in initfs
+    auto irqs = initfs_lock_.lock();
     int mindex = memfile::initfs_lookup(name, memfile::required);
     x86_64_pagetable* pt = knew_pagetable();
     assert(mindex >= 0 && pt);
@@ -95,6 +97,7 @@ void start_initial_process(pid_t pid, const char* name) {
     // load code and data into pagetable
     memfile_loader ld(mindex, pt);
     int r = proc::load(ld);
+    initfs_lock_.unlock(irqs);
     assert(r >= 0);
 
     // allocate process, initialize registers
@@ -173,6 +176,15 @@ void free_process(proc* proc)
     // free the process itself and ptable
     kfree(proc);
     ptable[pid] = nullptr;
+}
+
+void free_ptable(x86_64_pagetable* pagetable)
+{
+    for(ptiter it(pagetable); it.low(); it.next()) 
+    {
+        it.kfree_ptp();
+    }
+    kfree(pagetable);
 }
 
 
@@ -410,6 +422,14 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return bufcache::get().sync(drop);
     }
 
+    case SYSCALL_EXECV:
+    {
+        const char* pathname = (const char*) regs->reg_rdi;
+        const char* const* argv = (const char* const*) regs->reg_rsi;
+        int argc = (int) regs->reg_rdx;
+        return p->syscall_execv(pathname, argv, argc);
+    }
+
     case SYSCALL_NASTY: 
     {
         nasty leak;
@@ -450,6 +470,13 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     case SYSCALL_PIPE: 
     {
         return p->syscall_pipe();
+    }
+
+    case SYSCALL_OPEN: 
+    {
+        const char* pathname = (const char*) regs->reg_rdi;
+        int flags = (int) regs->reg_rsi;
+        return p->syscall_open(pathname, flags);
     }
 
     default:
@@ -708,6 +735,227 @@ pid_t proc::syscall_fork(regstate* regs) {
     return child_pid;
 }
 
+int proc::syscall_open(const char* pathname, int flags)
+{
+    if (!pathname)
+    {
+        return E_FAULT;
+    }
+
+    // Check if pathname is null-terminated and if it is user-accessible
+    vmiter it1(this, (uintptr_t) pathname);
+    bool pathname_valid = false;
+    for (int i = 0; i < (int) memfile::namesize; i++) 
+    {
+        if(!it1.user() || it1.va() >= MEMSIZE_VIRTUAL)
+        {
+            return E_FAULT;
+        }
+        char c = *reinterpret_cast<char*>(it1.kptr());
+        if (c == '\0') 
+        {
+            pathname_valid = true;
+            break;
+        }
+        it1 += 1;
+    }
+
+    if (!pathname_valid)
+    {
+        return E_FAULT;
+    }
+    irqstate irqs = initfs_lock_.lock();
+    int mindex = -1;
+
+    // Lookups for the file in initfs and create if it doesn't exist
+    if (flags & OF_CREATE)
+    {
+        mindex = memfile::initfs_lookup(pathname, memfile::create);
+    }
+    else
+    {
+        mindex = memfile::initfs_lookup(pathname, memfile::optional);
+    }
+    if (mindex < 0)
+    {
+        initfs_lock_.unlock(irqs);
+        return mindex;
+    }
+    memfile* file = &memfile::initfs[mindex];
+    initfs_lock_.unlock(irqs);
+
+    irqs = file->lock_.lock();
+    if(flags & OF_TRUNC && file->len_) 
+    {
+        file->set_length(0);
+    }
+    file->lock_.unlock(irqs);
+
+
+    // Allocate file descriptor
+    int fd = allocate_fd(flags & OF_READ, flags & OF_WRITE);
+    if(fd < 0) {
+        return fd;
+    }
+    file_descriptor *f = fd_table_[fd];
+
+    // Create new vnode for file descriptor
+    f->vnode_ = knew<vnode_memfile>();
+    if (!f->vnode_) 
+    {
+        syscall_close(fd);
+        return E_NOMEM;
+    }
+
+    f->vnode_->vn_refcount = 1;
+    f->vnode_->data = reinterpret_cast<void*>(file);
+    return fd;
+}
+
+int proc::syscall_execv(const char* pathname, const char* const* argv, int argc)
+{
+    {
+        spinlock_guard guard(ptable_lock);
+        if (!pathname || !argv || argc < 1 || argv[argc])
+        {
+            return E_FAULT;
+        }
+
+        // Check if pathname is null-terminated and if it is user-accessible
+        vmiter it1(this, (uintptr_t) pathname);
+        bool pathname_valid = false;
+        for (int i = 0; i < (int) memfile::namesize; i++) 
+        {
+            // Check if pathname is user-accessible
+            if(!it1.user() || it1.va() >= MEMSIZE_VIRTUAL)
+            {
+                return E_FAULT;
+            }
+            char c = *reinterpret_cast<char*>(it1.kptr());
+            if (c == '\0') 
+            {
+                pathname_valid = true;
+                break;
+            }
+            it1 += 1;
+        }
+
+        if (!pathname_valid)
+        {
+            return E_FAULT;
+        }
+
+        // Check if first argument is same as pathname
+        if(strcmp(reinterpret_cast<const char*>(pathname), argv[0]) != 0) 
+        {
+            return E_FAULT;
+        }
+
+
+        x86_64_pagetable *pagetable = knew_pagetable();
+        if(!pagetable) 
+        {
+            return E_NOMEM;
+        }
+
+        // Look up the process image in initfs
+        auto irqs = initfs_lock_.lock();
+        int mindex = memfile::initfs_lookup(reinterpret_cast<const char*>(pathname), memfile::optional);
+        if (mindex < 0) 
+        {
+            free_ptable(pagetable);
+            initfs_lock_.unlock(irqs);
+            return E_NOENT;
+        }
+
+        memfile_loader ld(mindex, pagetable);
+
+        // Load process image
+        int r = proc::load(ld);
+        initfs_lock_.unlock(irqs);
+
+        if (r < 0)
+        {
+            free_ptable(pagetable);
+            return r;
+        }
+
+        size_t args_sz = 0;
+
+        // it would be prudent to cap args_sz in the future
+        for (int i = 0; i < argc; i++) 
+        {
+            args_sz += strlen(argv[i]) + 1;
+        }
+
+        size_t argv_sv = sizeof(const char* const) * (argc + 1);
+        size_t total_sz = args_sz + argv_sv;
+        size_t stack_sz = round_up(total_sz, PAGESIZE) + PAGESIZE;
+
+        // allocate stack page
+        void* stkpg = kalloc(stack_sz);
+        if (!stkpg)
+        {
+            free_ptable(pagetable);
+            return E_NOMEM;
+        }
+
+        // map stack page and console
+        int r2 = vmiter(pagetable, MEMSIZE_VIRTUAL - PAGESIZE).try_map(stkpg, PTE_PWU);
+        if (r2 < 0 || vmiter(pagetable, CONSOLE_ADDR).try_map(CONSOLE_ADDR, PTE_PWU) < 0)
+        {
+            kfree(stkpg);
+            free_ptable(pagetable);
+            return E_NOMEM;
+        }
+
+        vmiter it2(pagetable, MEMSIZE_VIRTUAL - args_sz);
+        vmiter it3(pagetable, MEMSIZE_VIRTUAL - args_sz - (argc + 1) * sizeof(uintptr_t));
+        memset(it3.kptr(), 0, (argc + 1) * sizeof(uintptr_t) + args_sz);
+
+        // copy arguments to stack
+        for (size_t i = 0; i < (size_t) argc; i++)
+        {
+            uintptr_t sz = strlen(argv[i]) + 1;
+            memcpy(it2.kptr(), argv[i], sz);
+            *(uintptr_t*)it3.kptr() = it2.va();
+            it2 += sz;
+            it3 += sizeof(uintptr_t);
+        }
+
+        // Replace current process with new process
+        x86_64_pagetable* oldpt = pagetable_;
+        this->init_user(pagetable);
+        regs_->reg_rbp = MEMSIZE_VIRTUAL;
+        regs_->reg_rsp = MEMSIZE_VIRTUAL - args_sz - (argc + 1) * sizeof(uintptr_t);
+        regs_->reg_rip = ld.entry_rip_;
+        regs_->reg_rsi = regs_->reg_rsp;
+        regs_->reg_rdi = argc;
+        set_pagetable(pagetable_);
+
+        // free the memory of the process
+        for (vmiter it(oldpt, 0); it.low(); it.next()) 
+        {
+            if (it.user() && it.pa() != CONSOLE_ADDR)
+            {
+                it.kfree_page();
+            }
+        }
+
+        // free the process page table
+        for (ptiter it(oldpt); it.low(); it.next())
+        {
+            it.kfree_ptp();
+        }
+
+        vmiter(this, 0).invalidate_all();
+
+        // ensures that the top pagetable is freed
+        delete oldpt;
+    }
+    yield_noreturn();
+}
+
 int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 {
     spinlock_guard guard(ptable_lock);
@@ -855,25 +1103,26 @@ int proc::syscall_close(int fd)
 {
     spinlock_guard guard(global_fd_table_lock);
     spinlock_guard table_guard(fd_table_lock);
-    if (fd < 0 || fd >= NUM_FD)
+
+    // Check if filedescriptor is valid
+    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd])
     {
         return E_BADF;
     }
 
     file_descriptor* close_fd = fd_table_[fd];
-
-    if (!close_fd)
-    {
-        return E_BADF;
-    }
-
+    
     fd_table_[fd] = nullptr;
     spinlock_guard guard2(close_fd->file_descriptor_lock);
-
+    
+    // Decrement reference count
     close_fd->ref--;
+
+    // If reference count is 0, free the file descriptor
     if(close_fd->ref == 0) 
     {
-        if (close_fd->vnode_->type_ == vnode::pipe)
+        // If vnode is a pipe, close the corresponding end of pipe
+        if (close_fd->vnode_->type_ == vnode::v_pipe)
         {
             bbuffer* bounded_buffer = reinterpret_cast<bbuffer*>(close_fd->vnode_->data);
             if (close_fd->writable)
@@ -886,6 +1135,8 @@ int proc::syscall_close(int fd)
                 bounded_buffer->read_closed_ = true;
                 bounded_buffer->wq_.notify_all();
             }
+
+            // If both ends of the pipe are closed, free the bounded buffer
             if (bounded_buffer->write_closed_ && bounded_buffer->read_closed_)
             {
                 kfree(close_fd->vnode_->data);
@@ -893,13 +1144,20 @@ int proc::syscall_close(int fd)
             }
         }
 
-        spinlock_guard g(close_fd->vnode_->vn_lock);
-        --close_fd->vnode_->vn_refcount;
-        if(close_fd->vnode_->vn_refcount == 0) 
+        if (close_fd->vnode_ != nullptr)
         {
-            kfree(close_fd->vnode_);
+            spinlock_guard g(close_fd->vnode_->vn_lock);
+            --close_fd->vnode_->vn_refcount;
+
+            // If vnode reference count is 0, free the vnode
+            if(close_fd->vnode_->vn_refcount == 0) 
+            {
+                kfree(close_fd->vnode_);
+            }
         }
 
+
+        // Remove the file descriptor from the global file descriptor table
         for (int i = 0; i < 32; i++)
         {
             if (global_fd_table[i] == close_fd)
@@ -914,10 +1172,12 @@ int proc::syscall_close(int fd)
 }
 
 
-int proc::allocate_fd(int vnode_type, bool readable, bool writable)
+int proc::allocate_fd(bool readable, bool writable)
 {
     spinlock_guard guard(global_fd_table_lock);
     spinlock_guard guard2(fd_table_lock);
+
+    // We want to first find a free global descriptor table entry
     int global_fd = -1;
     for (int i = 0; i < 32; i++)
     {
@@ -928,11 +1188,13 @@ int proc::allocate_fd(int vnode_type, bool readable, bool writable)
         }
     }
 
+    // If we can't find a free global descriptor table entry, return E_MFILE (too many open files)
     if (global_fd == -1)
     {
         return E_MFILE;
     }
 
+    // Now we want to find a free process descriptor table entry
     int proc_fd = -1;
 
     for (int i = 0; i < NUM_FD; i++)
@@ -944,42 +1206,46 @@ int proc::allocate_fd(int vnode_type, bool readable, bool writable)
         }
     }
 
+    // If we can't find a free process descriptor table entry, return E_MFILE (too many open files)
     if (proc_fd == -1)
     {
-        return E_NFILE;
+        return E_MFILE;
     }
 
-    if (vnode_type == vnode::pipe)
+
+    // Create a new file descriptor and add it to the global and process descriptor tables
+    file_descriptor* fd = knew<file_descriptor>();
+    if (!fd)
     {
-        file_descriptor* fd = knew<file_descriptor>();
-        if (!fd)
-        {
-            return E_NOMEM;
-        }
-        fd->readable = readable;
-        fd->writable = writable;
-        fd->ref++;
-        fd_table_[proc_fd] = fd;
-        global_fd_table[global_fd] = fd;
+        return E_NOMEM;
     }
+
+    // Initialize the file descriptor fields
+    fd->readable = readable;
+    fd->writable = writable;
+    fd->ref++;
+    fd_table_[proc_fd] = fd;
+    global_fd_table[global_fd] = fd;
     return proc_fd;
 }
 
 uintptr_t proc::syscall_pipe()
 {
-    int rfd = allocate_fd(vnode::pipe, true, false);
+    int wfd, rfd;
+
+    // allocate file descriptors for read and write ends of the pipe
+    wfd = allocate_fd(false, true);
+    if (wfd < 0) return wfd;
+
+
+    rfd = allocate_fd(true, false);
     if (rfd < 0)
     {
+        syscall_close(wfd);
         return rfd;
     }
 
-    int wfd = allocate_fd(vnode::pipe, false, true);
-    if (wfd < 0)
-    {
-        syscall_close(rfd);
-        return wfd;
-    }
-
+    // allocate associated pipe vnode for the file descriptors
     auto vnode = knew<vnode_pipe>();
 
     if (!vnode)
@@ -989,6 +1255,14 @@ uintptr_t proc::syscall_pipe()
         return E_NOMEM;
     }
 
+    // make sure the vnode is linked to the file descriptors
+    fd_table_[rfd]->vnode_ = vnode;
+    fd_table_[wfd]->vnode_ = vnode;
+
+    // we have two file descriptor references to the vnode
+    vnode->vn_refcount = 2;
+
+    // allocate bounded buffer for the pipe vnode
     auto bounder_buffer = knew<bbuffer>();
 
     if (!bounder_buffer)
@@ -1000,9 +1274,6 @@ uintptr_t proc::syscall_pipe()
     }
 
     vnode->data = bounder_buffer;
-    vnode->vn_refcount = 2;
-    fd_table_[rfd]->vnode_ = vnode;
-    fd_table_[wfd]->vnode_ = vnode;
 
     return rfd | ((uintptr_t) wfd << 32);
 }
@@ -1019,21 +1290,26 @@ uintptr_t proc::syscall_read(regstate* regs) {
     uintptr_t addr = regs->reg_rsi;
     size_t sz = regs->reg_rdx;
 
-    if(!sz) return 0;
-
-    // check for integer overflow
-    if(addr + sz < addr || sz == SIZE_MAX) {
-        return E_FAULT;
-    }
-
-    // test that file descriptor is present and readable
-    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->readable) {
+    // Check file descriptor 
+    if (fd < 0 ||  !fd_table_[fd] || !fd_table_[fd]->readable || !fd_table_[fd]->vnode_) 
+    {
         return E_BADF;
     }
 
-    // test that memory range is present, writable, and user-accessible
-    if(!(vmiter(this, addr).range_perm(sz, PTE_PWU))) {
+    // check for integer overflow
+    if (addr + sz < addr || sz == SIZE_MAX) {
         return E_FAULT;
+    }
+
+    // Validate the read buffer
+    if(addr + sz > VA_LOWEND || addr + sz < addr || !vmiter(this, addr).range_perm(sz, PTE_P | PTE_U)) 
+    {
+        return E_FAULT;
+    }
+
+    if (sz == 0) 
+    {
+        return 0;
     }
 
     return fd_table_[fd]->vnode_->read(fd_table_[fd], addr, sz);

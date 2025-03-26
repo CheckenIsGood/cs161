@@ -12,6 +12,7 @@
 
 pcistate pcistate::state;
 
+extern spinlock initfs_lock_;
 
 // knew_pagetable
 //    Allocate, initialize, and return a new, empty page table. Memory is
@@ -120,6 +121,7 @@ void process_halt() {
     consolestate::get().cursor(false);
     // decide when to power off
     unsigned long halt_at = 0;
+    auto irqs = initfs_lock_.lock();
     int haltidx = memfile::initfs_lookup(".halt");
     if (haltidx >= 0) {
         memfile& mf = memfile::initfs[haltidx];
@@ -134,6 +136,7 @@ void process_halt() {
             halt_at = ticks + (halt_after ? halt_after : 1);
         }
     }
+    initfs_lock_.unlock(irqs);
     // yield until halt time
     while (halt_at == 0 || long(halt_at - ticks) > 0) {
         current()->yield();

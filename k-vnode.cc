@@ -1,7 +1,7 @@
-#include "kernel.hh"
+#include "k-vnode.hh"
 #include "k-devices.hh"
 #include "k-wait.hh"
-#include "k-vnode.hh"
+
 
 
 uintptr_t vnode_kbd_cons::read(file_descriptor* f, uintptr_t addr, size_t sz) {
@@ -54,27 +54,67 @@ uintptr_t vnode_kbd_cons::read(file_descriptor* f, uintptr_t addr, size_t sz) {
     return n;
  }
 
- uintptr_t vnode_pipe::read(file_descriptor* f, uintptr_t addr, size_t sz) {
-    if (f->writable) 
+uintptr_t vnode_pipe::read(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    if (f->writable || !f || !f->vnode_ || f->vnode_->type_ != vnode::v_pipe) 
     {
         return E_BADF;
     }
     return reinterpret_cast<bbuffer*>(f->vnode_->data)->read(reinterpret_cast<char*>(addr), sz);
- }
+}
 
- uintptr_t vnode_pipe::write(file_descriptor* f, uintptr_t addr, size_t sz) {
-    if (f->readable) 
+uintptr_t vnode_pipe::write(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    if (f->readable || !f || !f->vnode_ || f->vnode_->type_ != vnode::v_pipe) 
     {
         return E_BADF;
     }
     return reinterpret_cast<bbuffer*>(f->vnode_->data)->write(reinterpret_cast<const char*>(addr), sz);
- }
+}
 
- ssize_t bbuffer::write(const char* buf, size_t sz) {
+
+uintptr_t vnode_memfile::read(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    spinlock_guard f_guard(f->file_descriptor_lock);
+    if (!f->readable || !f || !f->vnode_ || f->vnode_->type_ != vnode::v_memfile)
+    {
+        return E_BADF;
+    }
+    memfile* mfile = reinterpret_cast<memfile*>(f->vnode_->data);
+    spinlock_guard guard(mfile->lock_);
+    size_t read_sz = min(sz, mfile->len_ - f->read_offset);
+    memcpy(reinterpret_cast<char*>(addr), &mfile->data_[f->read_offset], read_sz);
+    f->read_offset += read_sz;
+    return read_sz;
+}
+
+uintptr_t vnode_memfile::write(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    spinlock_guard f_guard(f->file_descriptor_lock);
+    if (!f->writable || !f || !f->vnode_ || f->vnode_->type_ != vnode::v_memfile)
+    {
+        return E_BADF;
+    }
+    memfile* mfile = reinterpret_cast<memfile*>(f->vnode_->data);
+    spinlock_guard guard(mfile->lock_);
+    auto r = mfile->set_length(f->write_offset + sz);
+
+    if(r < 0) 
+    {
+        return r;
+    }
+
+    sz = min(mfile->capacity_ - f->write_offset, sz);
+    memcpy(&mfile->data_[f->write_offset], reinterpret_cast<void*>(addr), sz);
+    f->write_offset += sz;
+    return sz;
+}
+
+
+// Largely taken from god eddie's notes from CS61
+ssize_t bbuffer::write(const char* buf, size_t sz) 
+{
     spinlock_guard guard(lock_);
-
-
-
     assert(!this->write_closed_);
     size_t pos = 0;
 
@@ -113,6 +153,7 @@ uintptr_t vnode_kbd_cons::read(file_descriptor* f, uintptr_t addr, size_t sz) {
     }
 }
 
+// Largely taken from god eddie's notes from CS61
 ssize_t bbuffer::read(char* buf, size_t sz) {
     spinlock_guard guard(lock_);
 

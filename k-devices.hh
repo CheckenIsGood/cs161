@@ -80,6 +80,8 @@ struct memfile {
     size_t len_;                         // length of file data
     size_t capacity_;                    // # bytes available in `data_`
 
+    spinlock lock_;                      // lock for file data
+
     inline memfile();
     inline memfile(const char* name, unsigned char* first,
                    unsigned char* last);

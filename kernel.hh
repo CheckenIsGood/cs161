@@ -15,10 +15,11 @@ struct proc;
 struct yieldstate;
 struct proc_loader;
 struct elf_program;
+struct file_descriptor;
 #define PROC_RUNNABLE 1
 #define CANARY 0xABCE1234ABCD5678
 #define NUM_FD 10
-
+extern file_descriptor* global_fd_table[32];
 
 // kernel.hh
 //
@@ -88,8 +89,9 @@ struct __attribute__((aligned(4096))) proc {
     int syscall_dup2(int oldfd, int newfd);
     int syscall_close(int fd);
 
-    int allocate_fd(int vnode_type, bool readable, bool writable);
+    int allocate_fd(bool readable, bool writable);
     uintptr_t syscall_pipe();
+    int syscall_open(const char* pathname, int flags);
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);
@@ -97,6 +99,7 @@ struct __attribute__((aligned(4096))) proc {
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);
     pid_t kill_zombie(proc* zombie, int* status);
+    int syscall_execv(const char* pathname, const char* const* argv, int argc);
 
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);

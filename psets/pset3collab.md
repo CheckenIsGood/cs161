@@ -3,8 +3,8 @@ CS 161 Problem Set 3 Collaboration
 
 Collaborators
 -------------
-(Other students you worked with)
+Jonathan Wu, Pranav Sitaraman, Andrew Jing
 
 Citations
 ---------
-(Other sources consulted)
+Lecture Slides

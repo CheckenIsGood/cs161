@@ -82,6 +82,15 @@ void memusage::refresh() {
         mark(ka2pa(ahci_) + PAGESIZE * i, f_kernel);
     }
 
+    for (int i = 0; i < 32; i++)
+    {
+        if (global_fd_table[i] != nullptr)
+        {
+            mark(ka2pa(global_fd_table[i]), f_kernel);
+            mark(ka2pa(global_fd_table[i]->vnode_), f_kernel);
+        }
+    }
+
     // mark kernel ranges of physical memory
     // We handle reserved ranges of physical memory separately.
     for (auto range = physical_ranges.begin();
