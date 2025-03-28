@@ -4,6 +4,8 @@
 // MAIN CHICKADEEFS ITERATOR FUNCTIONS
 
 chkfs_fileiter& chkfs_fileiter::find(off_t off) {
+    assert(off >= 0);
+
     // if moving backwards, rewind to start
     off_ = off;
     if (!eptr_ || off_ < eoff_) {
@@ -61,6 +63,7 @@ int chkfs_fileiter::insert(blocknum_t first, unsigned count) {
     assert(ino_->is_write_locked());
     assert(count != 0);
     assert(!eptr_ || !eptr_->count);
+    assert(off_ == eoff_);
     assert((eoff_ % blocksize) == 0);
     auto& bc = bufcache::get();
     auto ino_slot = inode()->slot();

@@ -699,8 +699,8 @@ void console_clear() {
 //    A `printer` for writing strings to the CGA console.
 //    Understands limited ANSI terminal escape sequences.
 
-console_printer::console_printer(int cpos, bool scroll)
-    : cell_(console), scroll_(scroll) {
+console_printer::console_printer(int cpos, int scroll_mode)
+    : cell_(console), scroll_mode_(scroll_mode) {
     if (cpos < 0) {
         cell_ += cursorpos;
     } else if (cpos <= CONSOLE_ROWS * CONSOLE_COLUMNS) {
@@ -708,20 +708,41 @@ console_printer::console_printer(int cpos, bool scroll)
     }
 }
 
+static bool console_line_is_blank(int row) {
+    int cpos = row * CONSOLE_COLUMNS, ecpos = cpos + CONSOLE_COLUMNS;
+    while (cpos < ecpos && (console[cpos] & 0xF0DF) == 0x0000) {
+        ++cpos;
+    }
+    return cpos == ecpos;
+}
+
 [[gnu::noinline]]
 void console_printer::scroll() {
     assert(cell_ >= console + END_CPOS);
-    if (scroll_) {
-        for (int i = 0; i != END_CPOS - CONSOLE_COLUMNS; ++i) {
-            console[i] = console[i + CONSOLE_COLUMNS];
-        }
-        for (int i = END_CPOS - CONSOLE_COLUMNS; i != END_CPOS; ++i) {
-            console[i] = 0;
-        }
-        cell_ -= CONSOLE_COLUMNS;
-    } else {
+    if (scroll_mode_ == scroll_off) {
         cell_ = console;
+        return;
     }
+    if (scroll_mode_ == scroll_blank && scroll_blank_ < 0) {
+        int row = CONSOLE_ROWS - 1;
+        while (row > 0 && !console_line_is_blank(row - 1)) {
+            --row;
+        }
+        while (row > 0 && console_line_is_blank(row - 1)) {
+            --row;
+        }
+        scroll_blank_ = row;
+    } else if (scroll_blank_ > 0 && !console_line_is_blank(scroll_blank_)) {
+        scroll_blank_ = 0;
+    }
+    int sp = scroll_blank_ > 0 ? scroll_blank_ * CONSOLE_COLUMNS : 0;
+    for (int i = sp; i != END_CPOS - CONSOLE_COLUMNS; ++i) {
+        console[i] = console[i + CONSOLE_COLUMNS];
+    }
+    for (int i = END_CPOS - CONSOLE_COLUMNS; i != END_CPOS; ++i) {
+        console[i] = 0;
+    }
+    cell_ -= CONSOLE_COLUMNS;
 }
 
 void console_printer::move_cursor() {
@@ -862,18 +883,10 @@ void console_printf(const char* format, ...) {
 // k-hardware.cc/u-lib.cc supply error_vprintf
 
 [[gnu::noinline]]
-void error_printf(int cpos, const char* format, ...) {
-    va_list val;
-    va_start(val, format);
-    error_vprintf(cpos, format, val);
-    va_end(val);
-}
-
-[[gnu::noinline]]
 void error_printf(const char* format, ...) {
     va_list val;
     va_start(val, format);
-    error_vprintf(-1, format, val);
+    error_vprintf(format, val);
     va_end(val);
 }
 
@@ -890,8 +903,7 @@ void assert_memeq_fail(const char* file, int line, const char* msg,
     size_t epos = pos + 10 < sz ? pos + 10 : sz;
     const char* ellipsis1 = spos > 0 ? "..." : "";
     const char* ellipsis2 = epos < sz ? "..." : "";
-    error_printf(CPOS(22, 0),
-                 "%s:%d: \"%s%.*s%s\" != \"%s%.*s%s\" @%zu\n",
+    error_printf("%s:%d: \"%s%.*s%s\" != \"%s%.*s%s\" @%zu\n",
                  file, line,
                  ellipsis1, int(epos - spos), x + spos, ellipsis2,
                  ellipsis1, int(epos - spos), y + spos, ellipsis2, pos);

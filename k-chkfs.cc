@@ -186,7 +186,7 @@ int bufcache::sync(int drop) {
             // no data blocks are referenced
             assert(slots_[i].ref_ == 0 || slots_[i].state_ != bcslot::s_empty);
             if (slots_[i].ref_ > 0 && drop > 1 && slots_[i].bn_ >= 2) {
-                error_printf(CPOS(22, 0), "sync(2): block %u has nonzero reference count\n", slots_[i].bn_);
+                error_printf("sync(2): block %u has nonzero reference count\n", slots_[i].bn_);
                 assert_fail(__FILE__, __LINE__, "slots_[i].bn_ < 2");
             }
 

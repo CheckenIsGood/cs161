@@ -18,7 +18,7 @@ class chkfs_fileiter {
 
     // Return the current file offset
     inline off_t offset() const;
-    // Return true iff the offset is within the file (i.e., in some extent)
+    // Return true iff the offset is within the file’s extents
     inline bool active() const;
     // Return true iff the offset does not point at data
     inline bool empty() const;
@@ -34,6 +34,7 @@ class chkfs_fileiter {
 
 
     // Move the iterator to file offset `off`. Returns `*this`.
+    // `off` must be >= 0.
     chkfs_fileiter& find(off_t off);
     // Like `find(offset() + delta)`
     inline chkfs_fileiter& operator+=(ssize_t delta);
@@ -51,7 +52,8 @@ class chkfs_fileiter {
     //
     // The handout version can only add an extent to the end of the file,
     // immediately after all existing extents. An assertion will fail if
-    // `offset()` is in the middle of the file or is not block-aligned.
+    // `offset()` is not block-aligned or not immediately after all
+    // existing extents.
     //
     // The handout version will allocate an indirect extent if necessary,
     // but it supports at most one indirect-extent block.

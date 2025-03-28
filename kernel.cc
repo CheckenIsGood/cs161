@@ -135,8 +135,7 @@ void proc::exception(regstate* regs) {
                      addr, operation, problem);
         }
 
-        error_printf(CPOS(24, 0),
-                     CS_ERROR "Process %d page fault for %p (%s %s, rip=%p)!\n",
+        error_printf(CS_ERROR "Process %d page fault for %p (%s %s, rip=%p)!\n",
                      id_, addr, operation, problem, regs->reg_rip);
         pstate_ = proc::ps_faulted;
         yield();

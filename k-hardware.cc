@@ -186,10 +186,11 @@ static std::atomic_flag log_printer_lock;
 static std::atomic<cpustate*> log_printer_lock_owner;
 
 struct log_printer : public printer {
-    bool has_lock_ = false;
+    bool locked_ = false;
+    irqstate irqs_;
     ansi_escape_buffer ebuf_;
     log_printer() {
-        if (log_printer_lock_owner.load() == this_cpu()) {
+        if (is_cli() && log_printer_lock_owner.load() == this_cpu()) {
             return;
         }
         size_t tries = 0;
@@ -199,13 +200,16 @@ struct log_printer : public printer {
                 return;
             }
         }
-        has_lock_ = true;
+        irqs_ = irqstate::get();
+        cli();
         log_printer_lock_owner = this_cpu();
+        locked_ = true;
     }
     ~log_printer() {
-        if (has_lock_) {
+        if (locked_) {
             log_printer_lock_owner = nullptr;
             log_printer_lock.clear();
+            irqs_.restore();
         }
     }
     void putc(unsigned char c) override {
@@ -217,8 +221,11 @@ struct log_printer : public printer {
 
 struct error_printer : public console_printer {
     log_printer logpr_;
-    error_printer(int cpos, bool scroll)
-        : console_printer(cpos, scroll) {
+    error_printer()
+        : console_printer(-1, scroll_blank) {
+        if (cell_ < console + END_CPOS - CONSOLE_COLUMNS) {
+            cell_ = console + END_CPOS;
+        }
         color_ = COLOR_ERROR;
     }
     void putc(unsigned char c) override {
@@ -436,8 +443,8 @@ __always_inline x86_64_pagetable* backtrace_current_pagetable() {
 //    `log.txt` file via `log_printf`.
 
 __noinline
-void error_vprintf(int cpos, const char* format, va_list val) {
-    error_printer pr(cpos, cpos < 0);
+void error_vprintf(const char* format, va_list val) {
+    error_printer pr;
     pr.vprintf(format, val);
     pr.move_cursor();
 }
@@ -518,7 +525,7 @@ void log_print_backtrace(const proc* p) {
 
 void error_print_backtrace(const regstate& regs, x86_64_pagetable* pt,
                            bool exclude_rip) {
-    error_printer pr(-1, true);
+    error_printer pr;
     if (CCOL(cursorpos)) {
         pr.printf("\n");
     }
@@ -530,7 +537,7 @@ static void vpanic(const regstate& regs, x86_64_pagetable* pt,
                    const char* format, va_list val) {
     cli();
     panicking = true;
-    error_printer pr(CPOS(24, 80), true);
+    error_printer pr;
     if (!format) {
         format = "PANIC";
     }
@@ -564,10 +571,7 @@ void panic_at(const regstate& regs, const char* format, ...) {
 
 void assert_fail(const char* file, int line, const char* msg,
                  const char* description) {
-    if (consoletype != CONSOLE_NORMAL) {
-        cursorpos = CPOS(23, 0);
-    }
-    error_printer pr(-1, true);
+    error_printer pr;
     if (description) {
         pr.printf("%s:%d: %s\n", file, line, description);
     }
