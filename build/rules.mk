@@ -101,7 +101,7 @@ DEPCHECK_U_ASM_H := $(shell \
 endif
 
 ifneq ($(strip $(INITFS_CONTENTS) $(INITFS_PARAMS)),$(DEP_INITFS_CONTENTS))
-INITFS_BUILDSTAMP := $(shell echo "DEP_INITFS_CONTENTS:=$(strip $(INITFS_CONTENTS) $(INITFS_PARAMS))" > $(DEPSDIR)/_initfs.d; echo always)
+INITFS_BUILDSTAMP := $(shell echo "DEP_INITFS_CONTENTS:=$(strip $(INITFS_CONTENTS) $(INITFS_PARAMS))" > $(DEPSDIR)/_initfs.d; rm -f $(OBJDIR)/k-initfs.cc; echo always)
 endif
 
 ifneq ($(strip $(DISKFS_CONTENTS)),$(DEP_DISKFS_CONTENTS))

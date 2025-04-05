@@ -171,8 +171,7 @@ void memusage::page_error(uintptr_t pa, const char* desc, int pid) const {
     const char* fmt = pid >= 0
         ? "PAGE TABLE ERROR: %lx: %s (pid %d)\n"
         : "PAGE TABLE ERROR: %lx: %s\n";
-    error_printf(CPOS(22, 0), fmt, pa, desc, pid);
-    log_printf(fmt, pa, desc, pid);
+    error_printf(fmt, pa, desc, pid);
 }
 
 uint16_t memusage::symbol_at(uintptr_t pa) const {

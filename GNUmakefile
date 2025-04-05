@@ -34,8 +34,10 @@ LOG ?= file:log.txt
 QEMUOPT = -net none -parallel $(LOG) -smp $(NCPU)
 ifeq ($(D),1)
 QEMUOPT += -d int,cpu_reset,guest_errors -no-reboot -D qemu.log
+$(info * Writing detailed QEMU log to `qemu.log`)
 else ifeq ($(D),2)
 QEMUOPT += -d guest_errors -no-reboot -D qemu.log
+$(info * Writing detailed QEMU log to `qemu.log`)
 endif
 ifneq ($(NOGDB),1)
 QEMUGDB ?= -gdb tcp::12949

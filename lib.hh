@@ -498,9 +498,11 @@ struct printer {
 
 struct console_printer : public printer {
     volatile uint16_t* cell_;
-    bool scroll_;
+    unsigned short scroll_mode_;
+    short scroll_blank_ = -1;
     ansi_escape_buffer ebuf_;
-    console_printer(int cpos, bool scroll);
+    enum { scroll_off = 0, scroll_on = 1, scroll_blank = 2 };
+    console_printer(int cpos, int scroll_mode);
     void putc(unsigned char c) override;
     void scroll();
     void move_cursor();
@@ -508,14 +510,13 @@ struct console_printer : public printer {
 
 
 // error_printf([cursor,] format, ...)
-//    Like `console_printf`, but the initial color is black on red, and
-//    in the kernel, the message is also printed to the log.
+//    Like `console_printf`, but for errors. In the kernel, the message
+//    is printed to the botttom of the screen, initially in white on
+//    red, and the message is also printed to the log.
 [[gnu::noinline, gnu::cold]]
 void error_printf(const char* format, ...);
 [[gnu::noinline, gnu::cold]]
-void error_printf(int cpos, const char* format, ...);
-[[gnu::noinline, gnu::cold]]
-void error_vprintf(int cpos, const char* format, va_list val);
+void error_vprintf(const char* format, va_list val);
 
 
 inline bool ansi_escape_buffer::putc(unsigned char c, printer& pr) {
@@ -587,7 +588,7 @@ void assert_op_fail(const char* file, int line, const char* msg,
     char fmt[48];
     snprintf(fmt, sizeof(fmt), "%%s:%%d: expected %%%s %s %%%s\n",
              printfmt<T>::spec, op, printfmt<T>::spec);
-    error_printf(CPOS(22, 0), fmt, file, line, x, y);
+    error_printf(fmt, file, line, x, y);
     assert_fail(file, line, msg);
 }
 
