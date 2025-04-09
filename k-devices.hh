@@ -2,6 +2,8 @@
 #define CHICKADEE_K_DEVICES_HH
 #include "kernel.hh"
 #include "k-wait.hh"
+#include "chickadeefs.hh"
+#include "k-chkfs.hh"
 
 // keyboardstate: keyboard buffer and keyboard interrupts
 
@@ -143,6 +145,17 @@ struct memfile_loader : public proc_loader {
         assert(mf_index >= 0 && unsigned(mf_index) < memfile::initfs_size);
         memfile_ = &memfile::initfs[mf_index];
     }
+    get_page_type get_page(size_t off) override;
+    void put_page(buffer) override;
+};
+
+struct diskfs_loader : public proc_loader {
+    chkfs_iref iref_;         // Smart pointer to inode, holds reference
+    bcref active_buf_ref_;    // Current loaded buffer block
+
+    diskfs_loader(chkfs_iref iref, x86_64_pagetable* pt)
+        : proc_loader(pt), iref_(std::move(iref)) {}
+
     get_page_type get_page(size_t off) override;
     void put_page(buffer) override;
 };

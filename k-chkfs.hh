@@ -20,6 +20,8 @@ struct bcslot {
 
     std::atomic<int> state_ = s_empty;   // slot state
     std::atomic<unsigned> ref_ = 0;      // reference count
+    
+    uint64_t last_used_;             // last time this slot was used
 
     blocknum_t bn_;                      // disk block number (unless empty)
     unsigned char* buf_ = nullptr;       // memory buffer

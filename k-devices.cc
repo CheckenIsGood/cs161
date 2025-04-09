@@ -1,5 +1,6 @@
 #include "k-devices.hh"
 #include "k-apic.hh"
+#include "k-chkfsiter.hh"
 
 // k-devices.cc
 //
@@ -357,4 +358,32 @@ auto memfile_loader::get_page(size_t off) -> get_page_type {
 
 void memfile_loader::put_page(buffer) {
     // no need to do anything
+}
+
+auto diskfs_loader::get_page(size_t off) -> get_page_type {
+    if (!iref_) {
+        return std::unexpected(E_NOENT);
+    }
+
+    iref_->lock_read();
+
+    if (off >= iref_->size) {
+        iref_->unlock_read();
+        return std::unexpected(E_NXIO);
+    }
+
+    chkfs_fileiter it(iref_.get(), off);
+    active_buf_ref_ = it.load();
+
+    off_t within_block_offset = it.block_relative_offset();
+
+    return buffer(
+        active_buf_ref_.get()->buf_ + within_block_offset,
+        chkfs::blocksize - within_block_offset
+    );
+}
+
+void diskfs_loader::put_page(buffer){
+    iref_->unlock_read();
+    active_buf_ref_.reset();
 }

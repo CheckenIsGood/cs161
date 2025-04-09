@@ -22,11 +22,24 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
     assert(chkfs::blocksize == PAGESIZE);
     auto irqs = lock_.lock();
 
+    size_t evict_slot = size_t(-1);
+    uint64_t oldest_time = UINT64_MAX;
+
     // look for slot containing `bn`
     size_t i, empty_slot = -1;
     for (i = 0; i != nslots; ++i) {
-        if (slots_[i].empty()) {
-            if (empty_slot == size_t(-1)) {
+        if (slots_[i].ref_ == 0 && slots_[i].state_ == bcslot::s_clean) 
+        {
+            if (slots_[i].last_used_ < oldest_time) 
+            {
+                evict_slot = i;
+                oldest_time = slots_[i].last_used_;
+            }
+        }
+        if (slots_[i].empty()) 
+        {
+            if (empty_slot == size_t(-1)) 
+            {
                 empty_slot = i;
             }
         } else if (slots_[i].bn_ == bn) {
@@ -35,14 +48,23 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
     }
 
     // if not found, use free slot
-    if (i == nslots) {
-        if (empty_slot == size_t(-1)) {
-            // cache full!
+    if (i == nslots) 
+    {
+        if (empty_slot != size_t(-1)) 
+        {
+            i = empty_slot;
+        } 
+        else if (evict_slot != size_t(-1)) 
+        {
+            i = evict_slot;
+            slots_[i].clear(); // Clear it before reuse
+        } 
+        else 
+        {
             lock_.unlock(irqs);
-            log_printf("bufcache: no room for block %u\n", bn);
+            log_printf("bufcache: no room and no evictable block for %u\n", bn);
             return nullptr;
         }
-        i = empty_slot;
     }
 
     // acquire lock on slot
@@ -60,6 +82,7 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
     // add reference
     ++slot.ref_;
+    slot.last_used_ = rdtsc();
 
     // load block
     bool ok = slot.load(irqs, cleaner);
@@ -130,11 +153,10 @@ bool bcslot::load(irqstate& irqs, block_clean_function cleaner) {
 //    will change this behavior in pset 4 part A.
 
 void bcslot::decrement_reference_count() {
-    spinlock_guard guard(lock_);    // needed in case we `clear()`
+    spinlock_guard guard(lock_);    // needed for last_used_
     assert(ref_ != 0);
-    if (--ref_ == 0) {
-        clear();
-    }
+    last_used_ = rdtsc();
+    --ref_;
 }
 
 
@@ -143,6 +165,8 @@ void bcslot::decrement_reference_count() {
 //    with no spinlocks held.
 
 void bcslot::lock_buffer() {
+    cli(); 
+    assert(this_cpu()->spinlock_depth_ == 0);
     spinlock_guard guard(lock_);
     assert(state_ == s_clean || state_ == s_dirty);
     assert(buf_owner_ != current());

@@ -857,21 +857,37 @@ int proc::syscall_execv(const char* pathname, const char* const* argv, int argc)
             return E_NOMEM;
         }
 
-        // Look up the process image in initfs
-        auto irqs = initfs_lock_.lock();
-        int mindex = memfile::initfs_lookup(reinterpret_cast<const char*>(pathname), memfile::optional);
-        if (mindex < 0) 
-        {
-            free_ptable(pagetable);
-            initfs_lock_.unlock(irqs);
+        // // Look up the process image in initfs
+        // auto irqs = initfs_lock_.lock();
+        // int mindex = memfile::initfs_lookup(reinterpret_cast<const char*>(pathname), memfile::optional);
+        // if (mindex < 0) 
+        // {
+        //     free_ptable(pagetable);
+        //     initfs_lock_.unlock(irqs);
+        //     return E_NOENT;
+        // }
+
+        // memfile_loader ld(mindex, pagetable);
+
+        // // Load process image
+        // int r = proc::load(ld);
+        // initfs_lock_.unlock(irqs);
+
+
+        if (!sata_disk) {
+            return E_IO;
+        }
+
+        guard.unlock();
+        auto ino = chkfsstate::get().lookup_inode(pathname);
+        if (!ino) {
             return E_NOENT;
         }
 
-        memfile_loader ld(mindex, pagetable);
-
-        // Load process image
+        diskfs_loader ld(std::move(ino), pagetable);
         int r = proc::load(ld);
-        initfs_lock_.unlock(irqs);
+
+        guard.lock();
 
         if (r < 0)
         {
