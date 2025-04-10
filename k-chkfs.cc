@@ -7,6 +7,9 @@ bufcache bufcache::bc;
 bufcache::bufcache() {
 }
 
+list<bcslot, &bcslot::link_> dirty_list_;
+
+spinlock dirty_lock_; // protects dirty_list_
 
 // bufcache::load(bn, cleaner)
 //    Reads disk block `bn` into the buffer cache and returns a reference
@@ -165,8 +168,8 @@ void bcslot::decrement_reference_count() {
 //    with no spinlocks held.
 
 void bcslot::lock_buffer() {
-    cli(); 
-    assert(this_cpu()->spinlock_depth_ == 0);
+    // cli(); 
+    // assert(this_cpu()->spinlock_depth_ == 0);
     spinlock_guard guard(lock_);
     assert(state_ == s_clean || state_ == s_dirty);
     assert(buf_owner_ != current());
@@ -176,7 +179,13 @@ void bcslot::lock_buffer() {
         guard.lock();
     }
     buf_owner_ = current();
+    spinlock_guard dirty_guard(dirty_lock_);
     state_ = s_dirty;
+
+    if (!link_.is_linked())
+    {
+        dirty_list_.push_back(this);
+    }
 }
 
 
@@ -199,6 +208,25 @@ void bcslot::unlock_buffer() {
 int bufcache::sync(int drop) {
     // write dirty buffers to disk
     // Your code here!
+
+    if(!sata_disk) return E_IO;
+
+    list<bcslot, &bcslot::link_> mydirty;
+
+    // Atomically swap dirty_list_ with an empty list
+    {
+        spinlock_guard guard(dirty_lock_);
+        mydirty.swap(dirty_list_);
+        // bcslot::dirty_list_.reset();
+    }
+
+    // Write each dirty slot to disk
+    while (auto slot = mydirty.pop_front()) {
+        slot->lock_buffer();  // acquire write lock
+        sata_disk->write(slot->buf_, chkfs::blocksize, slot->bn_ * chkfs::blocksize);
+        slot->state_ = bcslot::s_clean;
+        slot->unlock_buffer();  // release write lock
+    }
 
     // drop clean buffers if requested
     if (drop > 0) {

@@ -95,6 +95,7 @@ struct __attribute__((aligned(4096))) proc {
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);
+    ssize_t syscall_lseek(int fd, off_t off, int origin);
     void syscall_nasty(regstate* reg);
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);

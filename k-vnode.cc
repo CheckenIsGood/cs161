@@ -1,6 +1,8 @@
 #include "k-vnode.hh"
 #include "k-devices.hh"
 #include "k-wait.hh"
+#include "k-chkfs.hh"
+#include "k-chkfsiter.hh"
 
 
 
@@ -108,6 +110,213 @@ uintptr_t vnode_memfile::write(file_descriptor* f, uintptr_t addr, size_t sz)
     memcpy(&mfile->data_[f->write_offset], reinterpret_cast<void*>(addr), sz);
     f->write_offset += sz;
     return sz;
+}
+
+uintptr_t vnode_disk::read(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    if (!f->vnode_->ino_)
+    {
+        log_printf("pew \n");
+        return E_BADF;
+    }
+
+    if (!f || !f->readable || !f->vnode_ || f->vnode_->type_ != vnode::disk || !f->vnode_->ino_)
+    {
+        log_printf("read \n");
+        return E_BADF;
+    }
+
+    off_t off = 0;
+    off_t write_offset = 0;
+    {
+        spinlock_guard guard(f->file_descriptor_lock);
+        off = f->read_offset;
+        if (f->writable) 
+        {
+            write_offset = f->write_offset;
+        }
+    }
+    unsigned char* buf = reinterpret_cast<unsigned char*>(addr);
+
+    chkfs_iref ino = std::move(f->vnode_->ino_);
+    if (!ino) {
+        return E_NOENT;
+    }
+
+    ino->lock_read();
+    if (!ino->size)
+    {
+        ino->unlock_read();
+        return 0;
+    }
+ 
+    chkfs_fileiter it(ino.get());
+ 
+    size_t nread = 0;
+    while (nread < sz) {
+        // copy data from current block
+        if (auto e = it.find(off).load()) {
+            unsigned b = it.block_relative_offset();
+            size_t ncopy = min(
+                size_t(ino->size - it.offset()),   // bytes left in file
+                chkfs::blocksize - b,              // bytes left in block
+                sz - nread                         // bytes left in request
+            );
+            memcpy(buf + nread, e->buf_ + b, ncopy);
+             
+            nread += ncopy;
+            off += ncopy;
+
+            if (f->writable) 
+            {
+                write_offset += ncopy;
+            }
+
+            if (ncopy == 0) {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+ 
+    ino->unlock_read();
+    f->vnode_->ino_ = std::move(ino);
+    {
+        spinlock_guard guard(f->file_descriptor_lock);
+        f->read_offset = off;
+        if (f->writable) 
+        {
+            f->write_offset = write_offset;
+        }
+    }
+    return nread;
+}
+
+uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz) 
+{
+    if (!f || !f->writable || !f->vnode_ || f->vnode_->type_ != vnode::disk || !f->vnode_->ino_)
+    {
+        log_printf("write \n");
+        return E_BADF;
+    }
+
+    off_t off = 0;
+    off_t read_offset = 0;
+    size_t initial_wpos_ = 0;
+    {
+        spinlock_guard guard(f->file_descriptor_lock);
+        off = f->write_offset;
+        initial_wpos_ = off;
+        if (f->readable) 
+        {
+            read_offset = f->read_offset;
+        }
+    }
+    unsigned char* buf = reinterpret_cast<unsigned char*>(addr);
+
+    chkfs_iref ino = std::move(f->vnode_->ino_);
+    if (!ino) {
+        return E_NOENT;
+    }
+
+    ino->lock_write();
+
+    if (off + sz > ino->size) 
+    {
+        ino->size = min(chkfs::blocksize, off + sz);
+    }
+
+    chkfs_fileiter it(ino.get());
+    size_t nwritten = 0;
+    while (nwritten < sz) {
+        // copy data from current block
+        if (auto e = it.find(off).load()) {
+            unsigned b = it.block_relative_offset();
+            size_t ncopy = min(
+                size_t(ino->size - it.offset()),   // bytes left in file
+                chkfs::blocksize - b,              // bytes left in block
+                sz - nwritten                         // bytes left in request
+            );
+
+            log_printf("ncopy %d \n", ncopy);
+
+            e->lock_buffer();
+            memcpy(e->buf_ + b, buf + nwritten, ncopy);
+            e->unlock_buffer();
+
+            nwritten += ncopy;
+            off += ncopy;
+
+            if (f->readable) 
+            {
+                read_offset += ncopy;
+            }
+            if (ncopy == 0) {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if (ino->size < initial_wpos_ + nwritten) 
+    {
+        ino->size = initial_wpos_ + nwritten;
+    }
+ 
+    ino->unlock_write();
+    f->vnode_->ino_ = std::move(ino);
+    {
+        spinlock_guard guard(f->file_descriptor_lock);
+        f->write_offset = off;
+        if (f->readable) 
+        {
+            f->read_offset = read_offset;
+        }
+    }
+    return nwritten;
+}
+
+ssize_t vnode_disk::lseek(file_descriptor* f, off_t off, int origin)
+{
+    if (!f || !f->vnode_ || f->vnode_->type_ != vnode::disk) 
+    {
+        return E_BADF;
+    }
+
+    spinlock_guard guard(f->file_descriptor_lock);
+    off_t new_offset = 0;
+    switch (origin) 
+    {
+        case LSEEK_SET: {
+            f->read_offset = off;
+            f->write_offset = off;
+            new_offset = off;
+            break;
+        }
+        case LSEEK_CUR: {
+            f->read_offset += off;
+            f->write_offset += off;
+            new_offset = f->read_offset;
+            break;
+        }
+        case LSEEK_END:{
+            f->read_offset = ino_->size + off;
+            f->write_offset = ino_->size + off;
+            new_offset = f->read_offset;
+            break;
+        }
+        case LSEEK_SIZE: {
+            new_offset = f->vnode_->ino_->size;
+            break;
+        }
+        default:
+            return E_INVAL;
+            break;
+    }
+
+    return new_offset;
 }
 
 

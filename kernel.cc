@@ -471,6 +471,14 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return p->syscall_pipe();
     }
 
+    case SYSCALL_LSEEK: 
+    {
+        int fd = regs->reg_rdi;
+        off_t off = regs->reg_rsi;
+        int origin = regs->reg_rdx;
+        return p->syscall_lseek(fd, off, origin);
+    }
+
     case SYSCALL_OPEN: 
     {
         const char* pathname = (const char*) regs->reg_rdi;
@@ -734,6 +742,31 @@ pid_t proc::syscall_fork(regstate* regs) {
     return child_pid;
 }
 
+ssize_t proc::syscall_lseek(int fd, off_t off, int origin)
+{
+    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd])
+    {
+        return E_BADF;
+    }
+    file_descriptor* file = fd_table_[fd];
+
+    spinlock_guard guard(file->file_descriptor_lock);
+
+    if (file->vnode_->type_ == vnode::v_pipe)
+    {
+        return E_SPIPE;
+    }
+
+    if (file->vnode_->type_ != vnode::disk)
+    {
+        return E_BADF;
+    }
+
+    vnode_disk* vnode = static_cast<vnode_disk*>(file->vnode_);
+
+    return vnode->lseek(file, off, origin);
+}
+
 int proc::syscall_open(const char* pathname, int flags)
 {
     if (!pathname)
@@ -763,33 +796,51 @@ int proc::syscall_open(const char* pathname, int flags)
     {
         return E_FAULT;
     }
-    irqstate irqs = initfs_lock_.lock();
-    int mindex = -1;
+    // irqstate irqs = initfs_lock_.lock();
+    // int mindex = -1;
 
-    // Lookups for the file in initfs and create if it doesn't exist
-    if (flags & OF_CREATE)
-    {
-        mindex = memfile::initfs_lookup(pathname, memfile::create);
-    }
-    else
-    {
-        mindex = memfile::initfs_lookup(pathname, memfile::optional);
-    }
-    if (mindex < 0)
-    {
-        initfs_lock_.unlock(irqs);
-        return mindex;
-    }
-    memfile* file = &memfile::initfs[mindex];
-    initfs_lock_.unlock(irqs);
+    // // Lookups for the file in initfs and create if it doesn't exist
+    // if (flags & OF_CREATE)
+    // {
+    //     mindex = memfile::initfs_lookup(pathname, memfile::create);
+    // }
+    // else
+    // {
+    //     mindex = memfile::initfs_lookup(pathname, memfile::optional);
+    // }
+    // if (mindex < 0)
+    // {
+    //     initfs_lock_.unlock(irqs);
+    //     return mindex;
+    // }
+    // memfile* file = &memfile::initfs[mindex];
+    // initfs_lock_.unlock(irqs);
 
-    irqs = file->lock_.lock();
-    if(flags & OF_TRUNC && file->len_) 
-    {
-        file->set_length(0);
-    }
-    file->lock_.unlock(irqs);
+    // irqs = file->lock_.lock();
+    // if(flags & OF_TRUNC && file->len_) 
+    // {
+    //     file->set_length(0);
+    // }
+    // file->lock_.unlock(irqs);
 
+    if (!sata_disk) {
+        return E_IO;
+    }
+
+    auto ino = chkfsstate::get().lookup_inode(pathname);
+    if (!ino) {
+        return E_NOENT;
+    }
+
+    // Truncate the file if OF_WRITE and OF_TRUNC flags are set
+    if (flags & OF_TRUNC && flags & OF_WRITE) 
+    {
+        ino->lock_write();
+        ino->slot()->lock_buffer();
+        ino->size = 0;
+        ino->slot()->unlock_buffer();
+        ino->unlock_write();
+    }
 
     // Allocate file descriptor
     int fd = allocate_fd(flags & OF_READ, flags & OF_WRITE);
@@ -799,7 +850,7 @@ int proc::syscall_open(const char* pathname, int flags)
     file_descriptor *f = fd_table_[fd];
 
     // Create new vnode for file descriptor
-    f->vnode_ = knew<vnode_memfile>();
+    f->vnode_ = knew<vnode_disk>();
     if (!f->vnode_) 
     {
         syscall_close(fd);
@@ -807,7 +858,7 @@ int proc::syscall_open(const char* pathname, int flags)
     }
 
     f->vnode_->vn_refcount = 1;
-    f->vnode_->data = reinterpret_cast<void*>(file);
+    f->vnode_->ino_ = std::move(ino);
     return fd;
 }
 
@@ -1157,6 +1208,12 @@ int proc::syscall_close(int fd)
                 kfree(close_fd->vnode_->data);
                 close_fd->vnode_->data = nullptr;
             }
+        }
+
+        // Let the disk inode go out of reference
+        if (close_fd->vnode_->type_ == vnode::disk)
+        {
+            auto disk_inode = std::move(close_fd->vnode_->ino_);
         }
 
         if (close_fd->vnode_ != nullptr)

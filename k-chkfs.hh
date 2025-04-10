@@ -7,6 +7,8 @@
 
 // buffer cache
 
+void kfree(void* ptr);
+
 using block_clean_function = void (*)(bcslot*);
 
 struct bcslot {
@@ -26,6 +28,8 @@ struct bcslot {
     blocknum_t bn_;                      // disk block number (unless empty)
     unsigned char* buf_ = nullptr;       // memory buffer
     proc* buf_owner_ = nullptr;          // `proc` holding buffer content lock
+
+    list_links link_;
 
 
     // return the index of this slot in the buffer cache

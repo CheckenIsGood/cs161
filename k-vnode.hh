@@ -2,6 +2,8 @@
 #define CHICKADEE_K_VNODE_HH
 #include "kernel.hh"
 #include "k-wait.hh"
+#include "k-chkfs.hh"
+#include "chickadeefs.hh"
 
 struct vnode;
 struct vnode_pipe;
@@ -11,6 +13,7 @@ struct vnode_kbd_cons;
 struct file_descriptor;
 struct bbuffer;
 
+using chkfs_iref = ref_ptr<chkfs::inode>;
 
 struct vnode
 {
@@ -22,6 +25,7 @@ struct vnode
     int vn_refcount = 0;                        // Reference count for vnode lifetime management
     spinlock vn_lock;                           // Lock for protecting vnode fields
     void* data = nullptr;                       // Pointer to vnode-specific data (if any)
+    chkfs_iref ino_;               // Reference to the inode
     vnode(vnode_type t) : type_(t) {}
     virtual uintptr_t read(file_descriptor* f, uintptr_t addr, size_t sz) = 0;
     virtual uintptr_t write(file_descriptor* f, uintptr_t addr, size_t sz) = 0;
@@ -46,6 +50,7 @@ struct vnode_disk : public vnode
     vnode_disk() : vnode(vnode::disk) {}
     uintptr_t read(file_descriptor* f, uintptr_t addr, size_t sz) override;
     uintptr_t write(file_descriptor* f, uintptr_t addr, size_t sz) override;
+    ssize_t lseek(file_descriptor* f, off_t off, int origin);
 };
 
 struct vnode_kbd_cons : public vnode
