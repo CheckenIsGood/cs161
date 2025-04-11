@@ -222,14 +222,49 @@ uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz)
 
     ino->lock_write();
 
-    if (off + sz > ino->size) 
+    chkfs_fileiter it(ino.get());
+
+    size_t allocated_size = round_up(ino->size, chkfs::blocksize);
+    if (sz > size_t(allocated_size - off)) 
     {
-        ino->size = min(chkfs::blocksize, off + sz);
+        size_t alloc_sz = (off + sz) - allocated_size;
+        size_t nbs = round_up(alloc_sz, chkfs::blocksize);
+
+        size_t nblocks = nbs / chkfs::blocksize;        
+
+        // log_printf("alloc sz %i \n", nblocks);
+
+        auto& fs = chkfsstate::get();
+        
+        chkfs::blocknum_t bn = fs.allocate_extent(nblocks);
+        
+
+        if (bn >= chkfs::blocknum_t(E_MINERROR)) {
+            log_printf("allocate extent error \n");
+            ino->unlock_write();
+            return E_NOSPC;
+        }
+
+        while (it.active()) {
+            it.next();
+        }
+
+        int r = it.insert(bn, nblocks);
+
+        if (r < 0) {
+            ino->unlock_write();
+            return r;
+        }
     }
 
-    chkfs_fileiter it(ino.get());
+    if (off + sz > ino->size) 
+    {
+        ino->size = off + sz;
+    }
+
     size_t nwritten = 0;
     while (nwritten < sz) {
+
         // copy data from current block
         if (auto e = it.find(off).load()) {
             unsigned b = it.block_relative_offset();
@@ -238,8 +273,6 @@ uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz)
                 chkfs::blocksize - b,              // bytes left in block
                 sz - nwritten                         // bytes left in request
             );
-
-            log_printf("ncopy %d \n", ncopy);
 
             e->lock_buffer();
             memcpy(e->buf_ + b, buf + nwritten, ncopy);
@@ -302,13 +335,17 @@ ssize_t vnode_disk::lseek(file_descriptor* f, off_t off, int origin)
             break;
         }
         case LSEEK_END:{
+            ino_->lock_read();
             f->read_offset = ino_->size + off;
             f->write_offset = ino_->size + off;
+            ino_->unlock_read();
             new_offset = f->read_offset;
             break;
         }
         case LSEEK_SIZE: {
-            new_offset = f->vnode_->ino_->size;
+            ino_->lock_read();
+            new_offset = ino_->size;
+            ino_->unlock_read();
             break;
         }
         default:

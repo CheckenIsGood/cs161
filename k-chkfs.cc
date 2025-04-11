@@ -65,6 +65,21 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
         else 
         {
             lock_.unlock(irqs);
+
+            // fallback path: attempt to sync if dirty but unreferenced blocks exist
+            bool saw_unreferenced_dirty = false;
+            for (size_t j = 0; j != nslots; ++j) {
+                if (slots_[j].ref_ == 0 && slots_[j].state_ == bcslot::s_dirty) {
+                    saw_unreferenced_dirty = true;
+                    break;
+                }
+            }
+
+            if (saw_unreferenced_dirty) {
+                sync(0); // write dirty blocks to free up slots
+                return load(bn, cleaner); // try again
+            }
+
             log_printf("bufcache: no room and no evictable block for %u\n", bn);
             return nullptr;
         }
@@ -431,6 +446,65 @@ chkfs_iref chkfsstate::lookup_inode(const char* filename) {
 //    `blocknum >= blocknum_t(E_MINERROR)`.
 
 auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
-    // Your code here
-    return E_INVAL;
+    auto& bufcache = bufcache::get();
+    auto superblock_slot = bufcache.load(0);
+
+    auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
+
+    bcref fbb_bn = bufcache.load(superblock.fbb_bn);
+    fbb_bn->lock_buffer();
+
+    bitset_view fbb(reinterpret_cast<uint64_t*>(fbb_bn->buf_), chkfs::bitsperblock);
+
+    blocknum_t block_num, current_block;
+    bool found_extent;
+
+    found_extent = false;
+
+    block_num = fbb.find_lsb(superblock.data_bn);
+
+    while (block_num < superblock.nblocks) 
+    {
+        unsigned free_count = 0;
+        for(current_block = block_num; current_block < block_num + count; ++current_block) 
+        {
+            if(fbb[current_block]) 
+            {
+                ++free_count;
+            }
+        }
+
+        if(free_count == count) 
+        {
+            found_extent = true;
+            break;
+        }
+
+        block_num = current_block + 1;
+    }
+
+    if(found_extent) 
+    {
+        for(blocknum_t i = block_num; i < block_num + count; ++i) 
+        {
+            log_printf("working \n");
+            fbb[i] = false;
+        }
+    }
+
+    // if (block_num >= superblock.journal_bn || block_num + count >= superblock.journal_bn) {
+    //     log_printf("journal error \n");
+    //     fbb_bn->unlock_buffer();
+    //     return blocknum_t(E_NOSPC);
+    // }
+
+    fbb_bn->unlock_buffer();
+
+    if (!found_extent) {
+        log_printf("block num %i \n", block_num);
+        log_printf("no extent \n");
+        return blocknum_t(E_NOSPC);
+    }
+
+    return block_num;
 }

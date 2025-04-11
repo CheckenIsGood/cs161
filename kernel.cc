@@ -750,8 +750,6 @@ ssize_t proc::syscall_lseek(int fd, off_t off, int origin)
     }
     file_descriptor* file = fd_table_[fd];
 
-    spinlock_guard guard(file->file_descriptor_lock);
-
     if (file->vnode_->type_ == vnode::v_pipe)
     {
         return E_SPIPE;
