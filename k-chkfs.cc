@@ -495,17 +495,17 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
         }
     }
 
-    // if (block_num >= superblock.journal_bn || block_num + count >= superblock.journal_bn) {
-    //     log_printf("journal error \n");
-    //     fbb_bn->unlock_buffer();
-    //     return blocknum_t(E_NOSPC);
-    // }
+    // check if the block number is valid
+    if (block_num >= superblock.nblocks || block_num + count >= superblock.nblocks) 
+    {
+        fbb_bn->unlock_buffer();
+        return blocknum_t(E_NOSPC);
+    }
 
     fbb_bn->unlock_buffer();
 
-    if (!found_extent) {
-        log_printf("block num %i \n", block_num);
-        log_printf("no extent \n");
+    if (!found_extent) 
+    {
         return blocknum_t(E_NOSPC);
     }
 
@@ -521,16 +521,21 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
 
     chkfs_fileiter it(root_dirino.get());
 
+    // directory entry for the new file
     chkfs::dirent* dirent;
     
-    // look for empty directory
-    for(size_t diroff = 0; diroff < root_dirino->size; diroff += blocksize) {
+    // find a empty directory
+    for(size_t diroff = 0; diroff < root_dirino->size; diroff += blocksize) 
+    {
         if (auto e = it.find(diroff).load()) 
         {
-            size_t bsz = min(root_dirino->size - diroff, blocksize);
+            // go through block and see if directory entry is empty
             dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
-            for(unsigned i = 0; i * sizeof(*dirent) < bsz; ++i, ++dirent) 
+
+            // almost jacked from lookup_inode lol
+            for(unsigned i = 0; i * sizeof(*dirent) < min(root_dirino->size - diroff, blocksize); ++i, ++dirent) 
             {
+                // If we find an empty directory entry, we can use it
                 if(!dirent->inum) 
                 {
                     e->lock_buffer();
@@ -547,32 +552,26 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
         }
     }
  
-    // couldn't find empty dirent: try returning the one at the end of file
-    if(!(root_dirino->size % blocksize)) {
-        // not enough space: extend directory
-        log_printf("why am here?");
-        blocknum_t bn = this->allocate_extent(1);
-        if(!bn)
-        {
-            return E_AGAIN;
-        }
+    // We couldn't find an empty directory entry, so we need to allocate a new block
+    blocknum_t bn = this->allocate_extent(1);
+    if(!bn)
+    {
+        return E_AGAIN;
+    }
 
-        while (it.active()) 
-        {
-            it.next();
-        }
+    // go to end of file to insert new block
+    while (it.active()) 
+    {
+        it.next();
+    }
 
-        root_dirino->slot()->unlock_buffer();
-        int r = it.insert(bn, 1);
-        root_dirino->size += blocksize;
-        root_dirino->slot()->lock_buffer();
+    root_dirino->slot()->unlock_buffer();
+    int r = it.insert(bn, 1);
+    root_dirino->size += blocksize;
+    root_dirino->slot()->lock_buffer();
 
-        if (r < 0) {
-            return E_AGAIN;
-        }
-    } else {
-        // the size of a directory must be a multiple of size of dirent
-        assert(root_dirino->size % sizeof(chkfs::dirent) == 0);
+    if (r < 0) {
+        return E_AGAIN;
     }
  
     // go to end of file
@@ -585,6 +584,8 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
     dirent = reinterpret_cast<chkfs::dirent*>(&e->buf_[it.block_relative_offset()]);
     memset(dirent, 0, blocksize); // initialize new block to 0
 
+
+    // set the directory entry
     dirent->inum = inum;
     memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
     e->unlock_buffer();
@@ -595,6 +596,8 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
 {
     // get root directory inode
     auto dirino = this->inode(1);
+
+    // hold write lock on root directory inode and lock_buffer to call link later
     dirino->lock_write();
     dirino->slot()->lock_buffer();
     auto& bufcache = bufcache::get();
@@ -602,44 +605,49 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
 
     auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
 
-    for(chkfs::inum_t inum = 1; inum < superblock.ninodes; ++inum) {
+    for(chkfs::inum_t inum = 1; inum < superblock.ninodes; ++inum) 
+    {
+        // Inode number inum is located in block number sb.inode_bn + inum/inodesperblock
         auto bn = superblock.inode_bn + inum / chkfs::inodesperblock;
-        if(auto ino_entry = bufcache.load(bn, clean_inode_block)) 
+        auto ino_slot = bufcache.load(bn, clean_inode_block);
+        if(!ino_slot) 
         {
-            size_t ino_off = sizeof(chkfs::inode) * (inum % chkfs::inodesperblock);
-            auto ino = reinterpret_cast<chkfs::inode*>(&ino_entry->buf_[ino_off]);
-            // synchronize access to inode's nlink, type, and size
-            if (!ino->is_write_locked()) 
-            {
-                ino->lock_write();
-                if(ino->type == 0) 
-                {
-                    // get empty dirent in root directory
-                    if(chkfsstate::get().link(inum, pathname) < 0) {
-                        ino->unlock_write();
-                        dirino->slot()->unlock_buffer();
-                        dirino->unlock_write();
-                        return nullptr;
-                    }
-
-                    // allocate inode
-                    ino->nlink = 1;
-                    ino->type = type;
-                    ino->size = 0;
-
-                    auto return_iref = chkfsstate::get().inode(inum);
-                    ino->unlock_write(); 
-                    dirino->slot()->unlock_buffer();
-                    dirino->unlock_write();
-                    return return_iref;
-                }
-                
-                ino->unlock_write();
-            }
-        } else {
             dirino->slot()->unlock_buffer();
             dirino->unlock_write();
             return nullptr;
+        }
+        // Inode at byte offset sizeof(inode) * (inum%inodesperblock)
+        size_t ino_index = sizeof(chkfs::inode) * (inum % chkfs::inodesperblock);
+        auto ino = reinterpret_cast<chkfs::inode*>(&ino_slot->buf_[ino_index]);
+
+        // check if the inode is locked and obtain lock if so
+        if (!ino->is_write_locked()) 
+        {
+            ino->lock_write();
+            if(ino->type == 0) 
+            {
+                // create directory entry for the new file
+                if(chkfsstate::get().link(inum, pathname) < 0) 
+                {
+                    ino->unlock_write();
+                    dirino->slot()->unlock_buffer();
+                    dirino->unlock_write();
+                    return nullptr;
+                }
+
+                // Set the inode fields and return
+                ino->size = 0;
+                ino->type = type;
+                ino->nlink = 1;
+
+                auto return_iref = chkfsstate::get().inode(inum);
+                ino->unlock_write(); 
+                dirino->slot()->unlock_buffer();
+                dirino->unlock_write();
+                return return_iref;
+            }
+                
+            ino->unlock_write();
         }
     }
     dirino->slot()->unlock_buffer();

@@ -3,8 +3,8 @@ CS 161 Problem Set 4 Collaboration
 
 Collaborators
 -------------
-(Other students you worked with)
+Sedik Sadik, Pranav Sitaraman, Jonathan Wu
 
 Citations
 ---------
-(Other sources consulted)
+None other than lecture slides and OSDev

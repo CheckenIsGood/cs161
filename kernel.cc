@@ -744,7 +744,7 @@ pid_t proc::syscall_fork(regstate* regs) {
 
 ssize_t proc::syscall_lseek(int fd, off_t off, int origin)
 {
-    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd] || !fd_table_[fd]->writable && !fd_table_[fd]->readable)
+    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd] || (!fd_table_[fd]->writable && !fd_table_[fd]->readable))
     {
         return E_BADF;
     }
@@ -822,10 +822,12 @@ int proc::syscall_open(const char* pathname, int flags)
     // }
     // file->lock_.unlock(irqs);
 
-    if (!sata_disk) {
+    if (!sata_disk) 
+    {
         return E_IO;
     }
 
+    // Find the file and create it if it doesn't exist (only create if OF_CREATE and OF_WRITE flags are set)
     auto ino = chkfsstate::get().lookup_inode(pathname);
     if (!ino) 
     {
@@ -933,13 +935,17 @@ int proc::syscall_execv(const char* pathname, const char* const* argv, int argc)
         // initfs_lock_.unlock(irqs);
 
 
-        if (!sata_disk) {
+        if (!sata_disk) 
+        {
             return E_IO;
         }
 
         guard.unlock();
+
+        // Find the file
         auto ino = chkfsstate::get().lookup_inode(pathname);
-        if (!ino) {
+        if (!ino) 
+        {
             return E_NOENT;
         }
 
