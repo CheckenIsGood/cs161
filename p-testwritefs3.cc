@@ -25,10 +25,13 @@ void process_main() {
     printf("%s:%d: create...\n", __FILE__, __LINE__);
 
     f = sys_open("geisel.txt", OF_WRITE);
+
     assert_lt(f, 0);
     assert_eq(f, E_NOENT);
 
     f = sys_open("geisel.txt", OF_WRITE | OF_CREATE);
+
+    
     assert_gt(f, 2);
 
     n = sys_write(f, "Why, girl, you're insane!\n"

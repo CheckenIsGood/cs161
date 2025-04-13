@@ -744,10 +744,11 @@ pid_t proc::syscall_fork(regstate* regs) {
 
 ssize_t proc::syscall_lseek(int fd, off_t off, int origin)
 {
-    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd])
+    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd] || !fd_table_[fd]->writable && !fd_table_[fd]->readable)
     {
         return E_BADF;
     }
+
     file_descriptor* file = fd_table_[fd];
 
     if (file->vnode_->type_ == vnode::v_pipe)
@@ -826,8 +827,17 @@ int proc::syscall_open(const char* pathname, int flags)
     }
 
     auto ino = chkfsstate::get().lookup_inode(pathname);
-    if (!ino) {
-        return E_NOENT;
+    if (!ino) 
+    {
+        if(flags & OF_CREATE && flags & OF_WRITE) {
+            ino = chkfsstate::get().create_file(pathname, chkfs::type_regular);
+            if(!ino) return E_AGAIN;
+        } 
+        else 
+        {
+            // log_printf("pew \n");
+            return E_NOENT;
+        }
     }
 
     // Truncate the file if OF_WRITE and OF_TRUNC flags are set

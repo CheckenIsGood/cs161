@@ -22,6 +22,7 @@ spinlock dirty_lock_; // protects dirty_list_
 //    Returns a null reference if there's no room for the block.
 
 bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
+    retry:
     assert(chkfs::blocksize == PAGESIZE);
     auto irqs = lock_.lock();
 
@@ -77,7 +78,7 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
             if (saw_unreferenced_dirty) {
                 sync(0); // write dirty blocks to free up slots
-                return load(bn, cleaner); // try again
+                goto retry; // try again
             }
 
             log_printf("bufcache: no room and no evictable block for %u\n", bn);
@@ -436,7 +437,6 @@ chkfs_iref chkfsstate::lookup_inode(const char* filename) {
     return ino;
 }
 
-
 // chkfsstate::allocate_extent(unsigned count)
 //    Allocates and returns the first block number of a fresh extent.
 //    The returned extent doesn't need to be initialized (but it should not be
@@ -463,7 +463,7 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
 
     block_num = fbb.find_lsb(superblock.data_bn);
 
-    while (block_num < superblock.nblocks) 
+    while (block_num + count < superblock.nblocks) 
     {
         unsigned free_count = 0;
         for(current_block = block_num; current_block < block_num + count; ++current_block) 
@@ -471,6 +471,10 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
             if(fbb[current_block]) 
             {
                 ++free_count;
+            }
+            else
+            {
+                break;
             }
         }
 
@@ -487,7 +491,6 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
     {
         for(blocknum_t i = block_num; i < block_num + count; ++i) 
         {
-            log_printf("working \n");
             fbb[i] = false;
         }
     }
@@ -507,4 +510,140 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
     }
 
     return block_num;
+}
+
+// Caller of the function must be holding a write lock on the root directory inode, buffer lock, and 
+// write lock of the inode it is linking to
+int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
+{
+    // find the root directory
+    auto root_dirino = this->inode(1);
+
+    chkfs_fileiter it(root_dirino.get());
+
+    chkfs::dirent* dirent;
+    
+    // look for empty directory
+    for(size_t diroff = 0; diroff < root_dirino->size; diroff += blocksize) {
+        if (auto e = it.find(diroff).load()) 
+        {
+            size_t bsz = min(root_dirino->size - diroff, blocksize);
+            dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
+            for(unsigned i = 0; i * sizeof(*dirent) < bsz; ++i, ++dirent) 
+            {
+                if(!dirent->inum) 
+                {
+                    e->lock_buffer();
+                    dirent->inum = inum;
+                    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
+                    e->unlock_buffer();
+                    return 0;
+                }
+            }
+        } 
+        else 
+        {
+            return E_AGAIN;
+        }
+    }
+ 
+    // couldn't find empty dirent: try returning the one at the end of file
+    if(!(root_dirino->size % blocksize)) {
+        // not enough space: extend directory
+        log_printf("why am here?");
+        blocknum_t bn = this->allocate_extent(1);
+        if(!bn)
+        {
+            return E_AGAIN;
+        }
+
+        while (it.active()) 
+        {
+            it.next();
+        }
+
+        int r = it.insert(bn, 1);
+
+        if (r < 0) {
+            return E_AGAIN;
+        }
+    } else {
+        // the size of a directory must be a multiple of size of dirent
+        assert(root_dirino->size % sizeof(chkfs::dirent) == 0);
+    }
+ 
+    // got to end of file
+    auto e = it.find(root_dirino->size - blocksize).load();
+    if (e) 
+    {
+        e->lock_buffer();
+        dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
+        memset(dirent, 0, blocksize); // initialize new block to 0
+    }
+    else
+    {
+        return E_AGAIN;
+    }
+
+    dirent->inum = inum;
+    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
+    e->unlock_buffer();
+    return 0;
+}
+
+chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
+{
+    // get root directory inode
+    auto dirino = this->inode(1);
+    dirino->lock_write();
+    dirino->slot()->lock_buffer();
+    auto& bufcache = bufcache::get();
+    auto superblock_slot = bufcache.load(0);
+
+    auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
+
+    for(chkfs::inum_t inum = 1; inum < superblock.ninodes; ++inum) {
+        auto bn = superblock.inode_bn + inum / chkfs::inodesperblock;
+        if(auto ino_entry = bufcache.load(bn, clean_inode_block)) 
+        {
+            size_t ino_off = sizeof(chkfs::inode) * (inum % chkfs::inodesperblock);
+            auto ino = reinterpret_cast<chkfs::inode*>(&ino_entry->buf_[ino_off]);
+            // synchronize access to inode's nlink, type, and size
+            if (!ino->is_write_locked()) 
+            {
+                ino->lock_write();
+                if(ino->type == 0) 
+                {
+                    // get empty dirent in root directory
+                    if(chkfsstate::get().link(inum, pathname) < 0) {
+                        ino->unlock_write();
+                        dirino->slot()->unlock_buffer();
+                        dirino->unlock_write();
+                        return nullptr;
+                    }
+
+                    // allocate inode
+                    ino->nlink = 1;
+                    ino->type = type;
+                    ino->size = 0;
+
+                    auto return_iref = chkfsstate::get().inode(inum);
+                    ino->unlock_write(); 
+                    dirino->slot()->unlock_buffer();
+                    dirino->unlock_write();
+                    return return_iref;
+                }
+                
+                ino->unlock_write();
+            }
+        } else {
+            dirino->slot()->unlock_buffer();
+            dirino->unlock_write();
+            return nullptr;
+        }
+    }
+    dirino->slot()->unlock_buffer();
+    dirino->unlock_write();
+    return nullptr;
+
 }

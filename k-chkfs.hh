@@ -133,6 +133,9 @@ struct chkfsstate {
 
     blocknum_t allocate_extent(unsigned count = 1);
 
+    chkfs::dirent* find_empty_dirent();
+    int link(chkfs::inum_t inum, const char* pathname);
+    chkfs_iref create_file(const char* pathname, uint32_t type);
 
   private:
     static chkfsstate fs;
