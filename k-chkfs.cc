@@ -562,7 +562,10 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
             it.next();
         }
 
+        root_dirino->slot()->unlock_buffer();
         int r = it.insert(bn, 1);
+        root_dirino->size += blocksize;
+        root_dirino->slot()->lock_buffer();
 
         if (r < 0) {
             return E_AGAIN;
@@ -572,18 +575,15 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
         assert(root_dirino->size % sizeof(chkfs::dirent) == 0);
     }
  
-    // got to end of file
+    // go to end of file
     auto e = it.find(root_dirino->size - blocksize).load();
-    if (e) 
-    {
-        e->lock_buffer();
-        dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
-        memset(dirent, 0, blocksize); // initialize new block to 0
-    }
-    else
+    if (!e) 
     {
         return E_AGAIN;
     }
+    e->lock_buffer();
+    dirent = reinterpret_cast<chkfs::dirent*>(&e->buf_[it.block_relative_offset()]);
+    memset(dirent, 0, blocksize); // initialize new block to 0
 
     dirent->inum = inum;
     memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
