@@ -459,6 +459,7 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
     auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
 
     bcref fbb_bn = bufcache.load(superblock.fbb_bn);
+    fbb_bn->lock_buffer();
 
     bitset_view fbb(reinterpret_cast<uint64_t*>(fbb_bn->buf_), chkfs::bitsperblock);
 
@@ -497,18 +498,11 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
     {
         for(blocknum_t i = block_num; i < block_num + count; ++i) 
         {
-            fbb_bn->lock_buffer();
             fbb[i] = false;
-            fbb_bn->unlock_buffer();
         }
     }
 
-    // check if the block number is valid
-    if (block_num >= superblock.nblocks || block_num + count >= superblock.nblocks) 
-    {
-        return blocknum_t(E_NOSPC);
-    }
-
+    fbb_bn->unlock_buffer();
 
     if (!found_extent) 
     {
