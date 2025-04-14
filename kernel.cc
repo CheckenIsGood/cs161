@@ -1262,6 +1262,9 @@ int proc::syscall_close(int fd)
         if (close_fd->vnode_->type_ == vnode::disk)
         {
             auto disk_inode = std::move(close_fd->vnode_->ino_);
+
+
+            // This is unlink cleanup
             if (disk_inode && disk_inode->nlink == 0 && close_fd->vnode_->vn_refcount == 1) 
             {   
                 guard2.unlock();
@@ -1277,7 +1280,6 @@ int proc::syscall_close(int fd)
                 auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
 
                 bcref fbb_bn = bufcache.load(superblock.fbb_bn);
-                fbb_bn->lock_buffer();
 
                 bitset_view fbb(reinterpret_cast<uint64_t*>(fbb_bn->buf_), chkfs::bitsperblock);
 
@@ -1286,14 +1288,20 @@ int proc::syscall_close(int fd)
                     chkfs::blocknum_t bn = it.blocknum();
                     if (bn != 0) 
                     {
+                        fbb_bn->lock_buffer();
                         fbb[bn] = true;  // free the block
+                        fbb_bn->unlock_buffer();
                     }
                     it.next();
                 }
-                fbb_bn->unlock_buffer();
 
+                disk_inode->slot()->lock_buffer();
                 disk_inode->size = 0;
                 disk_inode->type = 0;
+                disk_inode->slot()->unlock_buffer();
+
+
+
                 disk_inode->unlock_write();
                 guard.lock();
                 table_guard.lock();

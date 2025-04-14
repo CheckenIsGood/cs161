@@ -22,6 +22,7 @@ spinlock dirty_lock_; // protects dirty_list_
 //    Returns a null reference if there's no room for the block.
 
 bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
+    bool synced_once = false;
     retry:
     assert(chkfs::blocksize == PAGESIZE);
     auto irqs = lock_.lock();
@@ -68,17 +69,22 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
             lock_.unlock(irqs);
 
             // fallback path: attempt to sync if dirty but unreferenced blocks exist
-            bool saw_unreferenced_dirty = false;
-            for (size_t j = 0; j != nslots; ++j) {
-                if (slots_[j].ref_ == 0 && slots_[j].state_ == bcslot::s_dirty) {
-                    saw_unreferenced_dirty = true;
-                    break;
-                }
-            }
+            if (!synced_once) {
+                synced_once = true;
 
-            if (saw_unreferenced_dirty) {
-                sync(0); // write dirty blocks to free up slots
-                goto retry; // try again
+                // Check for any unreferenced dirty blocks
+                bool saw_unreferenced_dirty = false;
+                for (size_t j = 0; j != nslots; ++j) {
+                    if (slots_[j].ref_ == 0 && slots_[j].state_ == bcslot::s_dirty) {
+                        saw_unreferenced_dirty = true;
+                        break;
+                    }
+                }
+
+                if (saw_unreferenced_dirty) {
+                    sync(0);
+                    goto retry;
+                }
             }
 
             log_printf("bufcache: no room and no evictable block for %u\n", bn);
@@ -541,7 +547,7 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
                 {
                     e->lock_buffer();
                     dirent->inum = inum;
-                    memcpy(dirent->name, pathname, chkfs::maxnamelen);
+                    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
                     e->unlock_buffer();
                     return 0;
                 }
@@ -566,18 +572,16 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
         it.next();
     }
 
-    root_dirino->slot()->unlock_buffer();
     int r = it.insert(bn, 1);
 
     if (r < 0) 
     {
-        root_dirino->slot()->lock_buffer();
         return E_AGAIN;
     }
 
-    root_dirino->size += blocksize;
-
     root_dirino->slot()->lock_buffer();
+    root_dirino->size += blocksize;
+    root_dirino->slot()->unlock_buffer();
  
     // go to end of file
     auto e = it.find(root_dirino->size - blocksize).load();
@@ -592,7 +596,7 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
 
     // set the directory entry
     dirent->inum = inum;
-    memcpy(dirent->name, pathname, chkfs::maxnamelen);
+    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
     e->unlock_buffer();
     return 0;
 }
@@ -604,7 +608,6 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
 
     // hold write lock on root directory inode and lock_buffer to call link later
     dirino->lock_write();
-    dirino->slot()->lock_buffer();
     auto& bufcache = bufcache::get();
     auto superblock_slot = bufcache.load(0);
 
@@ -617,7 +620,6 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
         auto ino_slot = bufcache.load(bn, clean_inode_block);
         if(!ino_slot) 
         {
-            dirino->slot()->unlock_buffer();
             dirino->unlock_write();
             return nullptr;
         }
@@ -635,19 +637,20 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
                 if(chkfsstate::get().link(inum, pathname) < 0) 
                 {
                     ino->unlock_write();
-                    dirino->slot()->unlock_buffer();
                     dirino->unlock_write();
                     return nullptr;
                 }
 
                 // Set the inode fields and return
+
+                ino->slot()->lock_buffer();
                 ino->size = 0;
                 ino->type = type;
                 ino->nlink = 1;
+                ino->slot()->unlock_buffer();
 
                 auto return_iref = chkfsstate::get().inode(inum);
                 ino->unlock_write(); 
-                dirino->slot()->unlock_buffer();
                 dirino->unlock_write();
                 return return_iref;
             }
@@ -655,10 +658,8 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
             ino->unlock_write();
         }
     }
-    dirino->slot()->unlock_buffer();
     dirino->unlock_write();
     return nullptr;
-
 }
 
 int chkfsstate::unlink(const char* pathname) {
