@@ -494,6 +494,13 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
         block_num = current_block + 1;
     }
 
+    // check if the block number is valid
+    if (block_num >= superblock.nblocks || block_num + count >= superblock.nblocks) 
+    {
+        fbb_bn->unlock_buffer();
+        return blocknum_t(E_NOSPC);
+    }
+
     if(found_extent) 
     {
         for(blocknum_t i = block_num; i < block_num + count; ++i) 
