@@ -200,7 +200,6 @@ void free_ptable(x86_64_pagetable* pagetable)
 void proc::exception(regstate* regs) {
     // It can be useful to log events using `log_printf`.
     // Events logged this way are stored in the host's `log.txt` file.
-    //log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
 
     // Record most recent user-mode %rip.
     if ((regs->reg_cs & 3) != 0) {
@@ -265,7 +264,6 @@ void proc::exception(regstate* regs) {
 }
 
 uintptr_t syscall_unchecked(regstate* regs, proc* p) {
-    //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
 
     p->recent_user_rip_ = regs->reg_rip;
     switch (regs->reg_rax) {
@@ -479,12 +477,19 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return p->syscall_lseek(fd, off, origin);
     }
 
+    case SYSCALL_UNLINK:
+    {
+        return p->syscall_unlink((const char*) regs->reg_rdi);
+    }
+
     case SYSCALL_OPEN: 
     {
         const char* pathname = (const char*) regs->reg_rdi;
         int flags = (int) regs->reg_rsi;
         return p->syscall_open(pathname, flags);
     }
+
+
 
     default:
         // no such system call
@@ -592,7 +597,6 @@ void proc::syscall_testbuddy(regstate* reg)
     {
         kfree(kalloced[i]);
     }
-    // log_printf("kalloc succeeded!\n");
     
     auto irqs = print.lock();
     console_printf(CS_SUCCESS "kalloc succeeded!\n");
@@ -833,11 +837,13 @@ int proc::syscall_open(const char* pathname, int flags)
     {
         if(flags & OF_CREATE && flags & OF_WRITE) {
             ino = chkfsstate::get().create_file(pathname, chkfs::type_regular);
-            if(!ino) return E_AGAIN;
+            if(!ino) 
+            {
+                return E_AGAIN;
+            }
         } 
         else 
         {
-            // log_printf("pew \n");
             return E_NOENT;
         }
     }
@@ -1179,6 +1185,34 @@ int proc::syscall_dup2(int oldfd, int newfd)
     return newfd;
 }
 
+int proc::syscall_unlink(const char* pathname) {
+    if (!pathname) return E_FAULT;
+
+    // Validate user string
+    vmiter it1(this, (uintptr_t) pathname);
+    bool pathname_valid = false;
+    for (int i = 0; i < (int) memfile::namesize; i++) 
+    {
+        if(!it1.user() || it1.va() >= MEMSIZE_VIRTUAL)
+        {
+            return E_FAULT;
+        }
+        char c = *reinterpret_cast<char*>(it1.kptr());
+        if (c == '\0') 
+        {
+            pathname_valid = true;
+            break;
+        }
+        it1 += 1;
+    }
+
+    if (!pathname_valid)
+    {
+        return E_FAULT;
+    }
+    return chkfsstate::get().unlink(pathname);
+}
+
 int proc::syscall_close(int fd)
 {
     spinlock_guard guard(global_fd_table_lock);
@@ -1228,6 +1262,43 @@ int proc::syscall_close(int fd)
         if (close_fd->vnode_->type_ == vnode::disk)
         {
             auto disk_inode = std::move(close_fd->vnode_->ino_);
+            if (disk_inode && disk_inode->nlink == 0 && close_fd->vnode_->vn_refcount == 1) 
+            {   
+                guard2.unlock();
+                table_guard.unlock();
+                guard.unlock();
+                disk_inode->lock_write();
+                // Free all data blocks used by this inode
+
+                chkfs_fileiter it(disk_inode.get());
+                auto& bufcache = bufcache::get();
+                auto superblock_slot = bufcache.load(0);
+
+                auto superblock = *reinterpret_cast<chkfs::superblock*>(&superblock_slot->buf_[chkfs::superblock_offset]);
+
+                bcref fbb_bn = bufcache.load(superblock.fbb_bn);
+                fbb_bn->lock_buffer();
+
+                bitset_view fbb(reinterpret_cast<uint64_t*>(fbb_bn->buf_), chkfs::bitsperblock);
+
+                while (it.active()) 
+                {
+                    chkfs::blocknum_t bn = it.blocknum();
+                    if (bn != 0) 
+                    {
+                        fbb[bn] = true;  // free the block
+                    }
+                    it.next();
+                }
+                fbb_bn->unlock_buffer();
+
+                disk_inode->size = 0;
+                disk_inode->type = 0;
+                disk_inode->unlock_write();
+                guard.lock();
+                table_guard.lock();
+                guard2.lock();
+            }
         }
 
         if (close_fd->vnode_ != nullptr)
@@ -1418,7 +1489,8 @@ uintptr_t proc::syscall_write(regstate* regs) {
     }
 
     // test that file descriptor is present and writable
-    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->writable) {
+    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->writable) 
+    {
         return E_BADF;
     }
 

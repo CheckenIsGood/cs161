@@ -237,7 +237,8 @@ int bufcache::sync(int drop) {
     }
 
     // Write each dirty slot to disk
-    while (auto slot = mydirty.pop_front()) {
+    while (auto slot = mydirty.pop_front()) 
+    {
         slot->lock_buffer();  // acquire write lock
         sata_disk->write(slot->buf_, chkfs::blocksize, slot->bn_ * chkfs::blocksize);
         slot->state_ = bcslot::s_clean;
@@ -540,7 +541,7 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
                 {
                     e->lock_buffer();
                     dirent->inum = inum;
-                    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
+                    memcpy(dirent->name, pathname, chkfs::maxnamelen);
                     e->unlock_buffer();
                     return 0;
                 }
@@ -567,12 +568,16 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
 
     root_dirino->slot()->unlock_buffer();
     int r = it.insert(bn, 1);
-    root_dirino->size += blocksize;
-    root_dirino->slot()->lock_buffer();
 
-    if (r < 0) {
+    if (r < 0) 
+    {
+        root_dirino->slot()->lock_buffer();
         return E_AGAIN;
     }
+
+    root_dirino->size += blocksize;
+
+    root_dirino->slot()->lock_buffer();
  
     // go to end of file
     auto e = it.find(root_dirino->size - blocksize).load();
@@ -587,7 +592,7 @@ int chkfsstate::link(chkfs::inum_t inum, const char* pathname)
 
     // set the directory entry
     dirent->inum = inum;
-    memcpy(dirent->name, pathname, chkfs::maxnamelen + 1);
+    memcpy(dirent->name, pathname, chkfs::maxnamelen);
     e->unlock_buffer();
     return 0;
 }
@@ -655,3 +660,50 @@ chkfs_iref chkfsstate::create_file(const char* pathname, uint32_t type)
     return nullptr;
 
 }
+
+int chkfsstate::unlink(const char* pathname) {
+    auto root_dirino = this->inode(1);
+    if (!root_dirino) return E_NOENT;
+
+    root_dirino->lock_write();
+    chkfs_fileiter it(root_dirino.get());
+
+    for (size_t diroff = 0; diroff < root_dirino->size; diroff += chkfs::blocksize) {
+        if (auto e = it.find(diroff).load()) {
+            size_t bsz = min(root_dirino->size - diroff, chkfs::blocksize);
+            auto dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
+            for (size_t i = 0; i < bsz / sizeof(chkfs::dirent); ++i, ++dirent) {
+                if (dirent->inum && strcmp(dirent->name, pathname) == 0) {
+                    auto ino = this->inode(dirent->inum);
+                    if (!ino) {
+                        root_dirino->unlock_write();
+                        return E_NOENT;
+                    }
+
+                    ino->lock_write();
+                    if (ino->nlink == 0) {
+                        ino->unlock_write();
+                        root_dirino->unlock_write();
+                        return E_NOENT;
+                    }
+
+                    // Clear dirent
+                    e->lock_buffer();
+                    dirent->inum = 0;
+                    memset(dirent->name, 0, chkfs::maxnamelen + 1);
+                    e->unlock_buffer();
+
+                    // Decrement link count
+                    ino->nlink--;
+                    ino->unlock_write();
+                    root_dirino->unlock_write();
+                    return 0;
+                }
+            }
+        }
+    }
+
+    root_dirino->unlock_write();
+    return E_NOENT;
+}
+

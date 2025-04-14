@@ -9,6 +9,8 @@
 
 void kfree(void* ptr);
 
+extern spinlock dirty_lock_; // protects dirty_list_
+
 using block_clean_function = void (*)(bcslot*);
 
 struct bcslot {
@@ -107,6 +109,15 @@ inline void bcslot::clear() {
         kfree(buf_);
         buf_ = nullptr;
     }
+
+    // Since we found an evictable slot, it must be clean so we can remove it from
+    // the dirty list if it is in it
+    spinlock_guard guard(dirty_lock_);
+    if (link_.is_linked()) 
+    {
+        link_.erase();
+    }
+    
 }
 
 
@@ -135,6 +146,7 @@ struct chkfsstate {
 
     chkfs::dirent* find_empty_dirent();
     int link(chkfs::inum_t inum, const char* pathname);
+    int unlink(const char* pathname);
     chkfs_iref create_file(const char* pathname, uint32_t type);
 
   private:

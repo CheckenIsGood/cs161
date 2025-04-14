@@ -114,15 +114,9 @@ uintptr_t vnode_memfile::write(file_descriptor* f, uintptr_t addr, size_t sz)
 
 uintptr_t vnode_disk::read(file_descriptor* f, uintptr_t addr, size_t sz) 
 {
-    if (!f->vnode_->ino_)
-    {
-        log_printf("pew \n");
-        return E_BADF;
-    }
 
     if (!f || !f->readable || !f->vnode_ || f->vnode_->type_ != vnode::disk || !f->vnode_->ino_)
     {
-        log_printf("read \n");
         return E_BADF;
     }
 
@@ -147,6 +141,7 @@ uintptr_t vnode_disk::read(file_descriptor* f, uintptr_t addr, size_t sz)
     if (!ino->size)
     {
         ino->unlock_read();
+        f->vnode_->ino_ = std::move(ino);
         return 0;
     }
  
@@ -197,7 +192,6 @@ uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz)
 {
     if (!f || !f->writable || !f->vnode_ || f->vnode_->type_ != vnode::disk || !f->vnode_->ino_)
     {
-        log_printf("write \n");
         return E_BADF;
     }
 
@@ -232,16 +226,14 @@ uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz)
 
         size_t nblocks = nbs / chkfs::blocksize;        
 
-        // log_printf("alloc sz %i \n", nblocks);
-
         auto& fs = chkfsstate::get();
         
         chkfs::blocknum_t bn = fs.allocate_extent(nblocks);
         
 
         if (bn >= chkfs::blocknum_t(E_MINERROR)) {
-            log_printf("allocate extent error \n");
             ino->unlock_write();
+            f->vnode_->ino_ = std::move(ino);
             return E_NOSPC;
         }
 
@@ -253,6 +245,7 @@ uintptr_t vnode_disk::write(file_descriptor* f, uintptr_t addr, size_t sz)
 
         if (r < 0) {
             ino->unlock_write();
+            f->vnode_->ino_ = std::move(ino);
             return r;
         }
     }
@@ -319,6 +312,7 @@ ssize_t vnode_disk::lseek(file_descriptor* f, off_t off, int origin)
     }
 
     spinlock_guard guard(f->file_descriptor_lock);
+    chkfs_iref ino = std::move(f->vnode_->ino_);
     off_t new_offset = 0;
     switch (origin) 
     {
@@ -335,23 +329,25 @@ ssize_t vnode_disk::lseek(file_descriptor* f, off_t off, int origin)
             break;
         }
         case LSEEK_END:{
-            ino_->lock_read();
-            f->read_offset = ino_->size + off;
-            f->write_offset = ino_->size + off;
-            ino_->unlock_read();
+            ino->lock_read();
+            f->read_offset = ino->size + off;
+            f->write_offset = ino->size + off;
+            ino->unlock_read();
             new_offset = f->read_offset;
             break;
         }
         case LSEEK_SIZE: {
-            ino_->lock_read();
-            new_offset = ino_->size;
-            ino_->unlock_read();
+            ino->lock_read();
+            new_offset = ino->size;
+            ino->unlock_read();
             break;
         }
         default:
             return E_INVAL;
             break;
     }
+    f->vnode_->ino_ = std::move(ino);
+
 
     return new_offset;
 }

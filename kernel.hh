@@ -100,6 +100,7 @@ struct __attribute__((aligned(4096))) proc {
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);
     pid_t kill_zombie(proc* zombie, int* status);
+    int syscall_unlink(const char* pathname);
     int syscall_execv(const char* pathname, const char* const* argv, int argc);
 
     inline irqstate lock_pagetable_read();
