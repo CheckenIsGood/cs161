@@ -308,19 +308,17 @@ inline int sys_testbuddy() {
 //    stack address `stack_top`. Returns the new thread's thread ID.
 //
 //    In the context of the new thread, when the `function` returns,
-//    the thread should call `sys_texit` with the function's return value
-//    as argument.
+//    the thread should call `sys_texit`.
 //
-//    Unlike most other system calls, we recommend you implement `sys_clone`
-//    in `u-lib.cc`.
-pid_t sys_clone(int (*function)(void*), void* arg, char* stack_top);
+//    We recommend you implement `sys_clone` in `u-lib.cc`, not this
+//    header file.
+pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
 
-// sys_texit(status)
-//    Exit the current thread with exit status `status`. If this is
-//    the last thread in the process, this will have the same effect
-//    as `sys_exit(status)`.
-[[noreturn]] inline void sys_texit(int status) {
-    make_syscall(SYSCALL_TEXIT, status);
+// sys_texit()
+//    Exit the current thread. If this is the last thread in a process,
+//    then exit the process with status 0.
+[[noreturn]] inline void sys_texit() {
+    make_syscall(SYSCALL_TEXIT);
     assert(false);
 }
 
