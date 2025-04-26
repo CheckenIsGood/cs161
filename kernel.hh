@@ -33,7 +33,7 @@ struct __attribute__((aligned(4096))) proc {
     };
 
     // These four members must come first:
-    pid_t id_ = 0;                             // Process ID
+    pid_t id_ = 0;                             // Thread ID
     regstate* regs_ = nullptr;                 // Process's current registers
     yieldstate* yields_ = nullptr;             // Process's current yield state
     std::atomic<int> pstate_ = ps_blank;       // Process state
@@ -48,11 +48,13 @@ struct __attribute__((aligned(4096))) proc {
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
 
-    pid_t ppid_;
+    pid_t ppid_;                                    
     list_links children_links_;                     // Links for child list
     list<proc, &proc::children_links_> children_;   // Children of this process
     wait_queue waitq_;                         // Process's wait queue
+    
 
+    pid_t pid_ = 0;                                    // Process ID
     file_descriptor* fd_table_[NUM_FD] = {nullptr};            // File descriptors
     spinlock fd_table_lock;
 

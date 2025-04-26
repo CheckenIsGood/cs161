@@ -20,6 +20,7 @@ constexpr size_t TIMER_WHEEL_SIZE = 10;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
 spinlock family_lock;
 file_descriptor* global_fd_table[32] = {nullptr};
+std::atomic<int> thread_counter_table[NPROC];
 spinlock global_fd_table_lock;
 extern spinlock initfs_lock_;
 
@@ -66,6 +67,7 @@ void kernel_start(const char* command) {
     init->init_kernel(init_process);
     init->ppid_ = 1;
     init->id_ = 1;
+    init->pid_ = 1;
     {
         spinlock_guard guard(ptable_lock);
         assert(!ptable[1]);
@@ -331,7 +333,7 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             }
 
             // set process state to zombie
-            p->pstate_ = proc::ps_zombie;
+            p->pstate_ = proc::ps_pre_zombie;
             {
                 // reparent the children in O(C) time
                 spinlock_guard guard2(family_lock); 
@@ -637,7 +639,10 @@ pid_t proc::syscall_fork(regstate* regs) {
             {
                 return E_NOMEM;
             }
+
+            // The first thread that is created will have the same thread id and process id
             ptable[child_pid]->id_ = child_pid;
+            ptable[child_pid]->pid_ = child_pid;
             break;
         }
     }
@@ -742,6 +747,8 @@ pid_t proc::syscall_fork(regstate* regs) {
         children_.push_back(ptable[child_pid]);
     }
 
+    // Increment thread count for the process
+    thread_counter_table[child_pid].fetch_add(1);
     cpus[child_pid % ncpu].enqueue(ptable[child_pid]);
     return child_pid;
 }
@@ -1144,7 +1151,6 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
         *status = zombie->status_;
     }
 
-    
     pid_t id = zombie->id_;
     assert(zombie != nullptr);
     delete zombie;
