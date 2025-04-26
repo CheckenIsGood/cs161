@@ -366,11 +366,11 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             p->pagetable_ = nullptr;
 
 
-            spinlock_guard guard2(family_lock); 
-            proc* parent = ptable[p->ppid_];
-            assert(parent);
-            parent->interrupt_ = true;
-            parent->waitq_.notify_all();
+            // spinlock_guard guard2(family_lock); 
+            // proc* parent = ptable[p->ppid_];
+            // assert(parent);
+            // parent->interrupt_ = true;
+            // parent->waitq_.notify_all();
         }
         p->yield_noreturn();
     }

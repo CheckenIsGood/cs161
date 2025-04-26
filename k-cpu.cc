@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-apic.hh"
+#include "k-vmiter.hh"
 #include "k-wait.hh"
 
 cpustate cpus[MAXCPU];
@@ -75,33 +76,51 @@ void cpustate::schedule() {
     // increment schedule counter
     ++nschedule_;
 
-    // find a runnable process (preferring one different from `current_`)
-    bool first_try = true;
-    while (!current_
-           || current_->pstate_ != proc::ps_runnable
-           || first_try) {
-        first_try = false;
+    {
+        spinlock_guard guard(ptable_lock);
 
-        proc* prev = current_;
-
-        runq_lock_.lock_noirq();
-
-        // reschedule old current if necessary
-       if (prev && prev->pstate_ == proc::ps_runnable) {
-            assert(prev->resumable());
-            if (!prev->runq_links_.is_linked()) {
-                runq_.push_back(prev);
+        if (current_ && current_->pstate_ == proc::ps_pre_zombie)
+        {
+            proc* parent = nullptr;
+            {
+                spinlock_guard guard2(family_lock);
+                parent = ptable[current_->ppid_];
+                assert(parent);
             }
+            parent->interrupt_ = true;
+            current_->pstate_ = proc::ps_zombie;
+            parent->waitq_.notify_all();
+
         }
 
-        // run idle task as last resort
-        current_ = runq_.empty() ? idle_task_ : runq_.pop_front();
+        // find a runnable process (preferring one different from `current_`)
+        bool first_try = true;
+        while (!current_
+            || current_->pstate_ != proc::ps_runnable
+            || first_try) {
+            first_try = false;
 
-        runq_lock_.unlock_noirq();
+            proc* prev = current_;
+
+            runq_lock_.lock_noirq();
+
+            // reschedule old current if necessary
+        if (prev && prev->pstate_ == proc::ps_runnable) {
+                assert(prev->resumable());
+                if (!prev->runq_links_.is_linked()) {
+                    runq_.push_back(prev);
+                }
+            }
+
+            // run idle task as last resort
+            current_ = runq_.empty() ? idle_task_ : runq_.pop_front();
+
+            runq_lock_.unlock_noirq();
+        }
+
+        // run `current_`
+        set_pagetable(current_->pagetable_);
     }
-
-    // run `current_`
-    set_pagetable(current_->pagetable_);
     current_->resume(); // does not return
 }
 

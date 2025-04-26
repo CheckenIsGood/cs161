@@ -20,6 +20,7 @@ struct file_descriptor;
 #define CANARY 0xABCE1234ABCD5678
 #define NUM_FD 10
 extern file_descriptor* global_fd_table[32];
+extern spinlock family_lock;
 
 // kernel.hh
 //
