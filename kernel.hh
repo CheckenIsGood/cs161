@@ -61,6 +61,8 @@ struct __attribute__((aligned(4096))) proc {
     file_descriptor* fd_table_[NUM_FD] = {nullptr};    // File descriptors - should only use proc leader's
     spinlock fd_table_lock;                            // should only use proc leader's
 
+    std::atomic<bool> should_exit_ = false;
+
     int status_;
     std::atomic<bool> sleeping_ = false;
     std::atomic<bool> interrupt_ = false;

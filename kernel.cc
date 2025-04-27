@@ -316,63 +316,20 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
     case SYSCALL_EXIT:
     {
-        {
-            spinlock_guard guard(ptable_lock);
-            {
-                auto irqs = p->fd_table_lock.lock();
-                for(int fd = 0; fd < NUM_FD; fd++) 
-                {
-                    if (p->fd_table_[fd])
-                    {
-                        p->fd_table_lock.unlock(irqs);
-                        p->syscall_close(fd);
-                        irqs = p->fd_table_lock.lock();
-                    }
-                }
-                p->fd_table_lock.unlock(irqs);
-            }
-
-            // set process state to zombie
-            p->pstate_ = proc::ps_pre_zombie;
-            {
-                // reparent the children in O(C) time
-                spinlock_guard guard2(family_lock); 
-                proc* child = p->children_.pop_back();
-                while (child) 
-                {
-                    child->ppid_ = 1;
-                    init->children_.push_back(child);
-                    child = p->children_.pop_back();
-                }
-            }
-            p->status_ = (int) regs->reg_rdi;
-
-            // clean up
-            for (vmiter it(p->pagetable_, 0); it.low(); it.next())
-            {
-                if (it.user() && it.pa() != CONSOLE_ADDR)
-                {
-                    it.kfree_page();
-                }
-            }
-                
-            for (ptiter it(p->pagetable_); it.low(); it.next())
-            {
-                it.kfree_ptp();
-            }
-
-            set_pagetable(early_pagetable);
-            delete p->pagetable_;
-            p->pagetable_ = nullptr;
-
-
-            // spinlock_guard guard2(family_lock); 
-            // proc* parent = ptable[p->ppid_];
-            // assert(parent);
-            // parent->interrupt_ = true;
-            // parent->waitq_.notify_all();
-        }
-        p->yield_noreturn();
+        // {
+        //     spinlock_guard guard(ptable_lock);
+        //     for (pid_t i = 1; i < NPROC; ++i) 
+        //     {
+        //         if (ptable[i] && ptable[i]->pid_ == p->pid_) 
+        //         {
+        //             ptable[i]->should_exit_ = true;
+        //             // ptable[i]->unblock();
+        //         }
+        //     }
+        //     log_printf("0\n");
+        // }
+        // p->yield_noreturn(); // never returns
+        p->syscall_texit((int) regs->reg_rdi);
     }
 
     case SYSCALL_SLEEP:
@@ -514,6 +471,11 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
 uintptr_t proc::syscall(regstate* regs)
 {
+    // if (should_exit_ && (pstate_ != ps_thread_leader_exited && pstate_ != ps_zombie && pstate_ != proc::ps_pre_zombie)) 
+    // {
+    //     log_printf("proc %d: exiting\n", id_);
+    //     syscall_texit(0);
+    // }
     uintptr_t val = syscall_unchecked(regs, this);
     if (is_cli() && this_cpu())
     {
@@ -1146,7 +1108,8 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 pid_t proc::kill_zombie(proc* zombie, int* status) 
 {
     spinlock_guard guard(family_lock);
-    
+    log_printf("3\n");
+
     if (zombie == nullptr)
     {
         log_printf("zombie is null in kill_zombie\n");
@@ -1510,70 +1473,78 @@ uintptr_t proc::syscall_read(regstate* regs) {
 }
 
 pid_t proc::syscall_texit(int status = 0) {
+
     {
+        log_printf("1 \n");
         spinlock_guard guard(ptable_lock);
 
-        // If this is the thread leader, change its state to thread_leader_exited
-        if (id_ == pid_)
+        log_printf("2 \n");
+        if (pstate_ != proc::ps_thread_leader_exited && pstate_ != proc::ps_zombie && pstate_ != proc::ps_pre_zombie)
         {
-            pstate_ = proc::ps_thread_leader_exited;
-        }
-        else
-        {
-            // Otherwise, change its state to zombie and let it eventually be cleaned up
-            pstate_ = proc::ps_zombie;
-        }
-        status_ = status;
-        proc* leader = ptable[pid_];
-        assert(leader);
-        assert(leader->pid_ == leader->id_);
-
-        leader->thread_counter_--;
-        if (leader->thread_counter_ == 0) 
-        {
-            // Close all file descriptors
-            auto irqs = leader->fd_table_lock.lock();
-            for (int fd = 0; fd < NUM_FD; fd++) {
-                if (leader->fd_table_[fd]) {
-                    leader->fd_table_lock.unlock(irqs);
-                    leader->syscall_close(fd);
-                    irqs = leader->fd_table_lock.lock();
-                }
-            }
-            leader->fd_table_lock.unlock(irqs);
-
-            // Reparent children
+            // If this is the thread leader, change its state to thread_leader_exited
+            if (id_ == pid_)
             {
-                spinlock_guard guard2(family_lock);
-                proc* child = leader->children_.pop_back();
-                while (child) 
-                {
-                    child->ppid_ = 1;
-                    init->children_.push_back(child);
-                    child = leader->children_.pop_back();
-                }
+                pstate_ = proc::ps_thread_leader_exited;
             }
-
-            // Free memory
-            if (leader->pagetable_) 
+            else
             {
-                for (vmiter it(leader->pagetable_, 0); it.low(); it.next()) {
-                    if (it.user() && it.pa() != CONSOLE_ADDR) {
-                        it.kfree_page();
+                // Otherwise, change its state to zombie and let it eventually be cleaned up
+                pstate_ = proc::ps_zombie;
+            }
+            status_ = status;
+            log_printf("texit: pid_=%d,\n", pid_);
+
+            proc* leader = ptable[pid_];
+            assert(leader);
+            assert(leader->pid_ == leader->id_);
+
+            leader->thread_counter_--;
+            if (leader->thread_counter_ == 0) 
+            {
+                // Close all file descriptors
+                auto irqs = leader->fd_table_lock.lock();
+                for (int fd = 0; fd < NUM_FD; fd++) {
+                    if (leader->fd_table_[fd]) {
+                        leader->fd_table_lock.unlock(irqs);
+                        leader->syscall_close(fd);
+                        irqs = leader->fd_table_lock.lock();
                     }
                 }
-                for (ptiter it(leader->pagetable_); it.low(); it.next()) {
-                    it.kfree_ptp();
+                leader->fd_table_lock.unlock(irqs);
+
+                // Reparent children
+                {
+                    spinlock_guard guard2(family_lock);
+                    proc* child = leader->children_.pop_back();
+                    while (child) 
+                    {
+                        child->ppid_ = 1;
+                        init->children_.push_back(child);
+                        child = leader->children_.pop_back();
+                    }
                 }
-                set_pagetable(early_pagetable);
-                delete leader->pagetable_;
-                leader->pagetable_ = nullptr;
+
+                // Free memory
+                if (leader->pagetable_) 
+                {
+                    for (vmiter it(leader->pagetable_, 0); it.low(); it.next()) {
+                        if (it.user() && it.pa() != CONSOLE_ADDR) {
+                            it.kfree_page();
+                        }
+                    }
+                    for (ptiter it(leader->pagetable_); it.low(); it.next()) {
+                        it.kfree_ptp();
+                    }
+                    set_pagetable(early_pagetable);
+                    delete leader->pagetable_;
+                    leader->pagetable_ = nullptr;
+                }
+                // Mark leader to be turned into zombie by the scheduler
+                leader->pstate_ = proc::ps_pre_zombie;
             }
-            // Mark leader to be turned into zombie by the scheduler
-            leader->pstate_ = proc::ps_pre_zombie;
+            set_pagetable(early_pagetable);
+            pagetable_ = nullptr;   
         }
-        set_pagetable(early_pagetable);
-        pagetable_ = nullptr;
     }
     // Yield away
     yield_noreturn();

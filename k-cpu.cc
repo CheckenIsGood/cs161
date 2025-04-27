@@ -76,6 +76,20 @@ void cpustate::schedule() {
     // increment schedule counter
     ++nschedule_;
 
+    int state = (int) current_->pstate_;
+    if (current_->pstate_ == proc::ps_faulted)
+    {
+        log_printf("%i \n", state);
+    }
+
+    // if (current_->should_exit_ && (current_->pstate_ != proc::ps_thread_leader_exited && current_->pstate_ != proc::ps_zombie && current_->pstate_ != proc::ps_pre_zombie)) 
+    // {
+    //     // log_printf("pew \n");
+    //     // int state = (int) current_->pstate_;
+    //     // log_printf("%i \n", state);
+    //     current_->syscall_texit(0);
+    // }
+
     {
         spinlock_guard guard(ptable_lock);
 
@@ -121,6 +135,7 @@ void cpustate::schedule() {
 
             // reschedule old current if necessary
         if (prev && prev->pstate_ == proc::ps_runnable) {
+                // log_printf("pid %i and id %i \n", prev->pid_, prev->id_);
                 assert(prev->resumable());
                 if (!prev->runq_links_.is_linked()) {
                     runq_.push_back(prev);
