@@ -20,7 +20,6 @@ constexpr size_t TIMER_WHEEL_SIZE = 10;
 wait_queue timer_wheel[TIMER_WHEEL_SIZE];
 spinlock family_lock;
 file_descriptor* global_fd_table[32] = {nullptr};
-std::atomic<int> thread_counter_table[NPROC];
 spinlock global_fd_table_lock;
 extern spinlock initfs_lock_;
 
@@ -105,6 +104,7 @@ void start_initial_process(pid_t pid, const char* name) {
     // allocate process, initialize registers
     proc* p = knew<proc>();
     p->id_ = pid;
+    p->pid_ = pid;
     p->ppid_ = 1;
     init->children_.push_back(p);
     p->init_user(pt);
@@ -445,7 +445,7 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
     case SYSCALL_GETPPID:
     {
         spinlock_guard guard2(family_lock);
-        return p->ppid_;
+        return ptable[p->pid_]->ppid_;
     }
 
     case SYSCALL_WAITPID:
@@ -489,6 +489,10 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         const char* pathname = (const char*) regs->reg_rdi;
         int flags = (int) regs->reg_rsi;
         return p->syscall_open(pathname, flags);
+    }
+
+    case SYSCALL_TEXIT: {
+        return p->syscall_texit(regs->reg_rdi);
     }
 
 
@@ -725,14 +729,14 @@ pid_t proc::syscall_fork(regstate* regs) {
     }
 
     {
-        spinlock_guard table_guard(fd_table_lock);    
+        spinlock_guard table_guard(ptable[pid_]->fd_table_lock);    
         for (int i = 0; i < NUM_FD; i++)
         {
-            if (fd_table_[i])
+            if (ptable[pid_]->fd_table_[i])
             {
-                spinlock_guard guard2(fd_table_[i]->file_descriptor_lock);
-                ptable[child_pid]->fd_table_[i] = fd_table_[i];
-                ++fd_table_[i]->ref;
+                spinlock_guard guard2(ptable[pid_]->fd_table_[i]->file_descriptor_lock);
+                ptable[child_pid]->fd_table_[i] = ptable[pid_]->fd_table_[i];
+                ++ptable[pid_]->fd_table_[i]->ref;
             }
         }
     }
@@ -744,23 +748,23 @@ pid_t proc::syscall_fork(regstate* regs) {
     {
         spinlock_guard guard3(family_lock);
         ptable[child_pid]->ppid_ = id_;
-        children_.push_back(ptable[child_pid]);
+        ptable[pid_]->children_.push_back(ptable[child_pid]);
     }
 
     // Increment thread count for the process
-    thread_counter_table[child_pid].fetch_add(1);
+    ptable[child_pid]->thread_counter_++;
     cpus[child_pid % ncpu].enqueue(ptable[child_pid]);
     return child_pid;
 }
 
 ssize_t proc::syscall_lseek(int fd, off_t off, int origin)
 {
-    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd] || (!fd_table_[fd]->writable && !fd_table_[fd]->readable))
+    if (fd < 0 || fd >= NUM_FD || !ptable[pid_]->fd_table_[fd] || (!ptable[pid_]->fd_table_[fd]->writable && !ptable[pid_]->fd_table_[fd]->readable))
     {
         return E_BADF;
     }
 
-    file_descriptor* file = fd_table_[fd];
+    file_descriptor* file = ptable[pid_]->fd_table_[fd];
 
     if (file->vnode_->type_ == vnode::v_pipe)
     {
@@ -870,7 +874,7 @@ int proc::syscall_open(const char* pathname, int flags)
     if(fd < 0) {
         return fd;
     }
-    file_descriptor *f = fd_table_[fd];
+    file_descriptor *f = ptable[pid_]->fd_table_[fd];
 
     // Create new vnode for file descriptor
     f->vnode_ = knew<vnode_disk>();
@@ -1058,9 +1062,10 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
     // find a zombie child that has exited or the specified pid child
     {
         spinlock_guard guard2(family_lock);
-        for (proc* a = children_.front(); a; a = children_.next(a))
+        for (proc* a = ptable[pid_]->children_.front(); a; a = ptable[pid_]->children_.next(a))
         {
-            if (pid == 0 || a->id_ == pid)
+            // Find the lead thread for the process
+            if (pid == 0 || (a->id_ == pid && a->pid_ == pid))
             {
                 child = a;
                 if (child->pstate_ == proc::ps_zombie)
@@ -1092,18 +1097,18 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
             if (pid == 0)
             {
                 waiter w;
-                w.wait_until(waitq_, [&] () 
+                w.wait_until(ptable[pid_]->waitq_, [&] () 
                 {
                     spinlock_guard guard3(family_lock);
                     if (!child)
                     {
-                        child = children_.front();
+                        child = ptable[pid_]->children_.front();
                     }
                     if (child->pstate_ == proc::ps_zombie)
                     {
                         return true;
                     }
-                    child = children_.next(child);
+                    child = ptable[pid_]->children_.next(child);
                     return false;
                 }, guard);
             }
@@ -1112,12 +1117,12 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
             else
             {
                 waiter w;
-                w.wait_until(waitq_, [&] () 
+                w.wait_until(ptable[pid_]->waitq_, [&] () 
                 {
                     spinlock_guard guard3(family_lock);
                     if (!child)
                     {
-                        child = children_.front();
+                        child = ptable[pid_]->children_.front();
                     }
                     if ((child->id_ == pid) && (child->pstate_ == proc::ps_zombie))
                     {
@@ -1131,19 +1136,24 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 
     assert(child);
 
-    // kill zombie process and return its pid
+    // kill zombie process leader and return its pid
     return kill_zombie(child, status);
 }
 
 // proc::kill_zombie(zombie, status)
 //    Cleans ups the zombie process and returns its pid.
-
+//    Zombie should be the lead thread for the zombie process.
 pid_t proc::kill_zombie(proc* zombie, int* status) 
 {
     spinlock_guard guard(family_lock);
+    
+    if (zombie == nullptr)
+    {
+        log_printf("zombie is null in kill_zombie\n");
+    }
 
     // remove zombie from children linked list
-    children_.erase(zombie);
+    ptable[pid_]->children_.erase(zombie);
 
     // update status
     if (status != nullptr)
@@ -1151,11 +1161,23 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
         *status = zombie->status_;
     }
 
-    pid_t id = zombie->id_;
-    assert(zombie != nullptr);
-    delete zombie;
-    ptable[id] = nullptr;
-    return id;
+
+    pid_t pid = zombie->pid_;
+
+    // free all the zombie threads of the process
+    for (pid_t i = 1; i < NPROC; i++)
+    {
+        if (ptable[i] != nullptr)
+        {
+            if (ptable[i]->pid_ == pid)
+            {
+                delete ptable[i];
+                ptable[i] = nullptr;
+            }
+        }
+    }
+
+    return pid;
 }
 
 int proc::syscall_dup2(int oldfd, int newfd)
@@ -1165,29 +1187,29 @@ int proc::syscall_dup2(int oldfd, int newfd)
         return oldfd;
     }
 
-    auto irqs = fd_table_lock.lock();
-    if (oldfd < 0 || oldfd >= NUM_FD || !fd_table_[oldfd] || newfd < 0 || newfd >= NUM_FD)
+    auto irqs = ptable[pid_]->fd_table_lock.lock();
+    if (oldfd < 0 || oldfd >= NUM_FD || !ptable[pid_]->fd_table_[oldfd] || newfd < 0 || newfd >= NUM_FD)
     {
-        fd_table_lock.unlock(irqs);
+        ptable[pid_]->fd_table_lock.unlock(irqs);
         return E_BADF;
     }
 
-    auto replace = fd_table_[oldfd];
+    auto replace = ptable[pid_]->fd_table_[oldfd];
 
-    if (fd_table_[newfd])
+    if (ptable[pid_]->fd_table_[newfd])
     {
-        fd_table_lock.unlock(irqs);
+        ptable[pid_]->fd_table_lock.unlock(irqs);
         syscall_close(newfd);
-        irqs = fd_table_lock.lock();
+        irqs = ptable[pid_]->fd_table_lock.lock();
     }
 
-    fd_table_[newfd] = replace;
+    ptable[pid_]->fd_table_[newfd] = replace;
 
     // maybe move this up there for the future
-    auto irqs2 = fd_table_[newfd]->file_descriptor_lock.lock();
-    ++fd_table_[newfd]->ref;
-    fd_table_[newfd]->file_descriptor_lock.unlock(irqs2);
-    fd_table_lock.unlock(irqs);
+    auto irqs2 = ptable[pid_]->fd_table_[newfd]->file_descriptor_lock.lock();
+    ++ptable[pid_]->fd_table_[newfd]->ref;
+    ptable[pid_]->fd_table_[newfd]->file_descriptor_lock.unlock(irqs2);
+    ptable[pid_]->fd_table_lock.unlock(irqs);
     return newfd;
 }
 
@@ -1222,17 +1244,17 @@ int proc::syscall_unlink(const char* pathname) {
 int proc::syscall_close(int fd)
 {
     spinlock_guard guard(global_fd_table_lock);
-    spinlock_guard table_guard(fd_table_lock);
+    spinlock_guard table_guard(ptable[pid_]->fd_table_lock);
 
     // Check if filedescriptor is valid
-    if (fd < 0 || fd >= NUM_FD || !fd_table_[fd])
+    if (fd < 0 || fd >= NUM_FD || !ptable[pid_]->fd_table_[fd])
     {
         return E_BADF;
     }
 
-    file_descriptor* close_fd = fd_table_[fd];
+    file_descriptor* close_fd = ptable[pid_]->fd_table_[fd];
     
-    fd_table_[fd] = nullptr;
+    ptable[pid_]->fd_table_[fd] = nullptr;
     spinlock_guard guard2(close_fd->file_descriptor_lock);
     
     // Decrement reference count
@@ -1346,7 +1368,7 @@ int proc::syscall_close(int fd)
 int proc::allocate_fd(bool readable, bool writable)
 {
     spinlock_guard guard(global_fd_table_lock);
-    spinlock_guard guard2(fd_table_lock);
+    spinlock_guard guard2(ptable[pid_]->fd_table_lock);
 
     // We want to first find a free global descriptor table entry
     int global_fd = -1;
@@ -1370,7 +1392,7 @@ int proc::allocate_fd(bool readable, bool writable)
 
     for (int i = 0; i < NUM_FD; i++)
     {
-        if (!fd_table_[i])
+        if (!ptable[pid_]->fd_table_[i])
         {
             proc_fd = i;
             break;
@@ -1395,7 +1417,7 @@ int proc::allocate_fd(bool readable, bool writable)
     fd->readable = readable;
     fd->writable = writable;
     fd->ref++;
-    fd_table_[proc_fd] = fd;
+    ptable[pid_]->fd_table_[proc_fd] = fd;
     global_fd_table[global_fd] = fd;
     return proc_fd;
 }
@@ -1427,8 +1449,8 @@ uintptr_t proc::syscall_pipe()
     }
 
     // make sure the vnode is linked to the file descriptors
-    fd_table_[rfd]->vnode_ = vnode;
-    fd_table_[wfd]->vnode_ = vnode;
+    ptable[pid_]->fd_table_[rfd]->vnode_ = vnode;
+    ptable[pid_]->fd_table_[wfd]->vnode_ = vnode;
 
     // we have two file descriptor references to the vnode
     vnode->vn_refcount = 2;
@@ -1462,7 +1484,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
     size_t sz = regs->reg_rdx;
 
     // Check file descriptor 
-    if (fd < 0 ||  !fd_table_[fd] || !fd_table_[fd]->readable || !fd_table_[fd]->vnode_) 
+    if (fd < 0 ||  !ptable[pid_]->fd_table_[fd] || !ptable[pid_]->fd_table_[fd]->readable || !ptable[pid_]->fd_table_[fd]->vnode_) 
     {
         return E_BADF;
     }
@@ -1483,8 +1505,78 @@ uintptr_t proc::syscall_read(regstate* regs) {
         return 0;
     }
 
-    return fd_table_[fd]->vnode_->read(fd_table_[fd], addr, sz);
+    return ptable[pid_]->fd_table_[fd]->vnode_->read(ptable[pid_]->fd_table_[fd], addr, sz);
     
+}
+
+pid_t proc::syscall_texit(int status = 0) {
+    {
+        spinlock_guard guard(ptable_lock);
+
+        // If this is the thread leader, change its state to thread_leader_exited
+        if (id_ == pid_)
+        {
+            pstate_ = proc::ps_thread_leader_exited;
+        }
+        else
+        {
+            // Otherwise, change its state to zombie and let it eventually be cleaned up
+            pstate_ = proc::ps_zombie;
+        }
+        status_ = status;
+        proc* leader = ptable[pid_];
+        assert(leader);
+        assert(leader->pid_ == leader->id_);
+
+        leader->thread_counter_--;
+        if (leader->thread_counter_ == 0) 
+        {
+            // Close all file descriptors
+            auto irqs = leader->fd_table_lock.lock();
+            for (int fd = 0; fd < NUM_FD; fd++) {
+                if (leader->fd_table_[fd]) {
+                    leader->fd_table_lock.unlock(irqs);
+                    leader->syscall_close(fd);
+                    irqs = leader->fd_table_lock.lock();
+                }
+            }
+            leader->fd_table_lock.unlock(irqs);
+
+            // Reparent children
+            {
+                spinlock_guard guard2(family_lock);
+                proc* child = leader->children_.pop_back();
+                while (child) 
+                {
+                    child->ppid_ = 1;
+                    init->children_.push_back(child);
+                    child = leader->children_.pop_back();
+                }
+            }
+
+            // Free memory
+            if (leader->pagetable_) 
+            {
+                for (vmiter it(leader->pagetable_, 0); it.low(); it.next()) {
+                    if (it.user() && it.pa() != CONSOLE_ADDR) {
+                        it.kfree_page();
+                    }
+                }
+                for (ptiter it(leader->pagetable_); it.low(); it.next()) {
+                    it.kfree_ptp();
+                }
+                set_pagetable(early_pagetable);
+                delete leader->pagetable_;
+                leader->pagetable_ = nullptr;
+            }
+            // Mark leader to be turned into zombie by the scheduler
+            leader->pstate_ = proc::ps_pre_zombie;
+        }
+        set_pagetable(early_pagetable);
+        pagetable_ = nullptr;
+    }
+    // Yield away
+    yield_noreturn();
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
@@ -1503,7 +1595,7 @@ uintptr_t proc::syscall_write(regstate* regs) {
     }
 
     // test that file descriptor is present and writable
-    if(fd < 0 || !fd_table_[fd] || !fd_table_[fd]->writable) 
+    if(fd < 0 || !ptable[pid_]->fd_table_[fd] || !ptable[pid_]->fd_table_[fd]->writable) 
     {
         return E_BADF;
     }
@@ -1512,7 +1604,7 @@ uintptr_t proc::syscall_write(regstate* regs) {
     if(!(vmiter(this, addr).range_perm(sz, PTE_P | PTE_U))) {
         return E_FAULT;
     }
-    return fd_table_[fd]->vnode_->write(fd_table_[fd], addr, sz);
+    return ptable[pid_]->fd_table_[fd]->vnode_->write(ptable[pid_]->fd_table_[fd], addr, sz);
 }
 
 uintptr_t proc::syscall_readdiskfile(regstate* regs) {

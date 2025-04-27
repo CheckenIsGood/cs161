@@ -30,14 +30,14 @@ extern spinlock family_lock;
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
     enum pstate_t {
-        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked, ps_zombie, ps_pre_zombie
+        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked, ps_zombie, ps_pre_zombie, ps_thread_leader_exited
     };
 
     // These four members must come first:
     pid_t id_ = 0;                             // Thread ID
     regstate* regs_ = nullptr;                 // Process's current registers
     yieldstate* yields_ = nullptr;             // Process's current yield state
-    std::atomic<int> pstate_ = ps_blank;       // Process state
+    std::atomic<int> pstate_ = ps_blank;       // Process stat
 
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
@@ -49,15 +49,17 @@ struct __attribute__((aligned(4096))) proc {
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
 
-    pid_t ppid_;                                    
-    list_links children_links_;                     // Links for child list
-    list<proc, &proc::children_links_> children_;   // Children of this process
-    wait_queue waitq_;                         // Process's wait queue
+    pid_t ppid_;                                    // Parent process ID - should only use proc leader's       
+    list_links children_links_;                     // Links for child list - should only use proc leader's
+    list<proc, &proc::children_links_> children_;   // Children of this process - should only use proc leader's
+    wait_queue waitq_;                         // Process's wait queue - should only use proc leader's
+    std::atomic<int> thread_counter_ = 0;            // Number of threads in this process (only accurate for leader thread)
+    // should only use proc leader's thread counter
     
 
     pid_t pid_ = 0;                                    // Process ID
-    file_descriptor* fd_table_[NUM_FD] = {nullptr};            // File descriptors
-    spinlock fd_table_lock;
+    file_descriptor* fd_table_[NUM_FD] = {nullptr};    // File descriptors - should only use proc leader's
+    spinlock fd_table_lock;                            // should only use proc leader's
 
     int status_;
     std::atomic<bool> sleeping_ = false;
@@ -100,6 +102,7 @@ struct __attribute__((aligned(4096))) proc {
     uintptr_t syscall_readdiskfile(regstate* reg);
     ssize_t syscall_lseek(int fd, off_t off, int origin);
     void syscall_nasty(regstate* reg);
+    pid_t syscall_texit(int status);
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);
     pid_t kill_zombie(proc* zombie, int* status);

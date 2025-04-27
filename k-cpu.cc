@@ -79,15 +79,30 @@ void cpustate::schedule() {
     {
         spinlock_guard guard(ptable_lock);
 
+
+        // Only the process leader will wake up the parent
         if (current_ && current_->pstate_ == proc::ps_pre_zombie)
         {
             proc* parent = nullptr;
             {
                 spinlock_guard guard2(family_lock);
+
+                // parent process leader thread
                 parent = ptable[current_->ppid_];
                 assert(parent);
+
+                // interrupt all the parent threads
+                for (pid_t i = 1; i < NPROC; i++)
+                {
+                    if (ptable[i] != nullptr)
+                    {
+                        if (ptable[i]->pid_ == current_->ppid_)
+                        {
+                            ptable[i]->interrupt_ = true;
+                        }
+                    }
+                }
             }
-            parent->interrupt_ = true;
             current_->pstate_ = proc::ps_zombie;
             parent->waitq_.notify_all();
 
