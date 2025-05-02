@@ -22,6 +22,7 @@ spinlock family_lock;
 file_descriptor* global_fd_table[32] = {nullptr};
 spinlock global_fd_table_lock;
 extern spinlock initfs_lock_;
+wait_queue exiting_wq;
 
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
@@ -316,20 +317,83 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
     case SYSCALL_EXIT:
     {
-        // {
-        //     spinlock_guard guard(ptable_lock);
-        //     for (pid_t i = 1; i < NPROC; ++i) 
-        //     {
-        //         if (ptable[i] && ptable[i]->pid_ == p->pid_) 
-        //         {
-        //             ptable[i]->should_exit_ = true;
-        //             // ptable[i]->unblock();
-        //         }
-        //     }
-        //     log_printf("0\n");
-        // }
-        // p->yield_noreturn(); // never returns
-        p->syscall_texit((int) regs->reg_rdi);
+        {
+            spinlock_guard guard(ptable_lock);
+            int status = regs->reg_rdi;
+
+            if (p->should_exit_)
+            {
+                guard.unlock();
+                p->yield_noreturn();
+            }
+
+            for (pid_t i = 1; i < NPROC; ++i) 
+            {
+                // set everything up the leader process to exit
+                if (ptable[i] && ptable[i]->pid_ == p->pid_ && (ptable[i]->id_ != p->pid_)) 
+                {
+                    ptable[i]->should_exit_ = true;
+                    ptable[i]->unblock();
+                }
+            }
+
+            waiter w;
+            w.wait_until(exiting_wq, [&] () 
+            {
+                log_printf("spinnig \n");
+                return ptable[p->pid_]->thread_counter_ <= 1;
+            }, guard);
+
+            proc* leader = ptable[p->pid_];
+            leader->status_ = status;
+
+
+            leader->thread_counter_--;
+            log_printf("what the hell %i \n", (int) leader->thread_counter_);
+            assert(leader->thread_counter_ == 0);
+
+            // Close all file descriptors
+            auto irqs = leader->fd_table_lock.lock();
+            for (int fd = 0; fd < NUM_FD; fd++) {
+                if (leader->fd_table_[fd]) {
+                    leader->fd_table_lock.unlock(irqs);
+                    leader->syscall_close(fd);
+                    irqs = leader->fd_table_lock.lock();
+                }
+            }
+            leader->fd_table_lock.unlock(irqs);
+
+            // Reparent children
+            {
+                spinlock_guard guard2(family_lock);
+                proc* child = leader->children_.pop_back();
+                while (child) 
+                {
+                    child->ppid_ = 1;
+                    init->children_.push_back(child);
+                    child = leader->children_.pop_back();
+                }
+            }
+
+            // Free memory
+            if (leader->pagetable_) 
+            {
+                for (vmiter it(leader->pagetable_, 0); it.low(); it.next()) {
+                    if (it.user() && it.pa() != CONSOLE_ADDR) {
+                        it.kfree_page();
+                    }
+                }
+                for (ptiter it(leader->pagetable_); it.low(); it.next()) {
+                    it.kfree_ptp();
+                }
+                set_pagetable(early_pagetable);
+                delete leader->pagetable_;
+                leader->pagetable_ = nullptr;
+            }
+            // Mark leader to be turned into zombie by the scheduler
+            leader->pstate_ = proc::ps_pre_zombie;  
+        }
+        p->yield_noreturn(); // never returns
     }
 
     case SYSCALL_SLEEP:
@@ -471,11 +535,6 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
 uintptr_t proc::syscall(regstate* regs)
 {
-    // if (should_exit_ && (pstate_ != ps_thread_leader_exited && pstate_ != ps_zombie && pstate_ != proc::ps_pre_zombie)) 
-    // {
-    //     log_printf("proc %d: exiting\n", id_);
-    //     syscall_texit(0);
-    // }
     uintptr_t val = syscall_unchecked(regs, this);
     if (is_cli() && this_cpu())
     {
@@ -713,8 +772,8 @@ pid_t proc::syscall_fork(regstate* regs) {
         ptable[pid_]->children_.push_back(ptable[child_pid]);
     }
 
-    // Increment thread count for the process
-    ptable[child_pid]->thread_counter_++;
+    // thread counter should be 1 on default
+    ptable[child_pid]->thread_counter_ = 1;
     cpus[child_pid % ncpu].enqueue(ptable[child_pid]);
     return child_pid;
 }
@@ -1108,7 +1167,6 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
 pid_t proc::kill_zombie(proc* zombie, int* status) 
 {
     spinlock_guard guard(family_lock);
-    log_printf("3\n");
 
     if (zombie == nullptr)
     {
@@ -1134,6 +1192,7 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
         {
             if (ptable[i]->pid_ == pid)
             {
+                log_printf("spin should not be above \n");
                 delete ptable[i];
                 ptable[i] = nullptr;
             }
@@ -1489,6 +1548,10 @@ pid_t proc::syscall_texit(int status = 0) {
             else
             {
                 // Otherwise, change its state to zombie and let it eventually be cleaned up
+                // because the proc will not be the proc leader if it is here
+                // it is fine we set it to ps_zombie because a waitpid
+                // will only delete a proc once its leader process becomes
+                // ps_pre_zombie
                 pstate_ = proc::ps_zombie;
             }
             status_ = status;
@@ -1540,12 +1603,14 @@ pid_t proc::syscall_texit(int status = 0) {
                     leader->pagetable_ = nullptr;
                 }
                 // Mark leader to be turned into zombie by the scheduler
-                leader->pstate_ = proc::ps_pre_zombie;
-            }
-            set_pagetable(early_pagetable);
-            pagetable_ = nullptr;   
+                leader->pstate_ = proc::ps_pre_zombie;  
+            } 
         }
     }
+
+    // This prevents the "The current stack page must not be free" condition
+    // Because only after the leader becomes pre_zombie can another
+    // process free the current proc object
     // Yield away
     yield_noreturn();
 }

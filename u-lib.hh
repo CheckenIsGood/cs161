@@ -312,7 +312,13 @@ inline int sys_testbuddy() {
 //
 //    We recommend you implement `sys_clone` in `u-lib.cc`, not this
 //    header file.
-pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
+pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top)
+{
+    register uintptr_t rax asm("") = reinterpret_cast<uintptr_t>(function);
+    register char* stack asm("") = stack_top;
+
+    _asm_("mov %0, " : : "r"(stack));
+}
 
 // sys_texit()
 //    Exit the current thread. If this is the last thread in a process,

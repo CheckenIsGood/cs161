@@ -53,7 +53,7 @@ struct __attribute__((aligned(4096))) proc {
     list_links children_links_;                     // Links for child list - should only use proc leader's
     list<proc, &proc::children_links_> children_;   // Children of this process - should only use proc leader's
     wait_queue waitq_;                         // Process's wait queue - should only use proc leader's
-    std::atomic<int> thread_counter_ = 0;            // Number of threads in this process (only accurate for leader thread)
+    std::atomic<int> thread_counter_ = 1;            // Number of threads in this process (only accurate for leader thread)
     // should only use proc leader's thread counter
     
 

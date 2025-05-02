@@ -75,24 +75,16 @@ void cpustate::schedule() {
 
     // increment schedule counter
     ++nschedule_;
-
-    int state = (int) current_->pstate_;
-    if (current_->pstate_ == proc::ps_faulted)
-    {
-        log_printf("%i \n", state);
-    }
-
-    // if (current_->should_exit_ && (current_->pstate_ != proc::ps_thread_leader_exited && current_->pstate_ != proc::ps_zombie && current_->pstate_ != proc::ps_pre_zombie)) 
-    // {
-    //     // log_printf("pew \n");
-    //     // int state = (int) current_->pstate_;
-    //     // log_printf("%i \n", state);
-    //     current_->syscall_texit(0);
-    // }
-
     {
         spinlock_guard guard(ptable_lock);
 
+        if (current_ && current_->should_exit_)
+        {
+            current_->pstate_ = proc::ps_zombie;
+            log_printf("is this happening \n");
+            ptable[current_->pid_]->thread_counter_--;
+            current_ = nullptr;
+        }
 
         // Only the process leader will wake up the parent
         if (current_ && current_->pstate_ == proc::ps_pre_zombie)
