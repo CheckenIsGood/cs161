@@ -314,10 +314,16 @@ inline int sys_testbuddy() {
 //    header file.
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top)
 {
-    register uintptr_t rax asm("") = reinterpret_cast<uintptr_t>(function);
-    register char* stack asm("") = stack_top;
+
+    register void (*fn)(void*) asm("r12") = function;
+    register void* fn_arg asm("r13") = arg;
+    register char* stack asm("r14") = stack_top;
+    
+    register pid_t result asm("rax");
+    
 
     _asm_("mov %0, " : : "r"(stack));
+    return result;
 }
 
 // sys_texit()

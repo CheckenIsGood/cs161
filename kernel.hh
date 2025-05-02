@@ -99,6 +99,7 @@ struct __attribute__((aligned(4096))) proc {
     int allocate_fd(bool readable, bool writable);
     uintptr_t syscall_pipe();
     int syscall_open(const char* pathname, int flags);
+    pid_t syscall_clone(regstate* regs);
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);

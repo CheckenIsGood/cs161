@@ -289,6 +289,9 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return -1;
 
     case SYSCALL_GETPID:
+        return p->pid_;
+    
+    case SYSCALL_GETTID:
         return p->id_;
 
     case SYSCALL_YIELD:
@@ -330,7 +333,7 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             for (pid_t i = 1; i < NPROC; ++i) 
             {
                 // set everything up the leader process to exit
-                if (ptable[i] && ptable[i]->pid_ == p->pid_ && (ptable[i]->id_ != p->pid_)) 
+                if (ptable[i] && ptable[i]->pid_ == p->pid_ && (ptable[i]->id_ != p->pid_) && (ptable[i]->id_ != p->id_)) 
                 {
                     ptable[i]->should_exit_ = true;
                     ptable[i]->unblock();
@@ -346,6 +349,12 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
             proc* leader = ptable[p->pid_];
             leader->status_ = status;
+
+            if (p->id_ != p->pid_)
+            {
+                p->pstate_ = proc::ps_zombie;
+                leader->thread_counter_--;
+            }
 
 
             leader->thread_counter_--;
@@ -514,6 +523,10 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
 
     case SYSCALL_TEXIT: {
         return p->syscall_texit(regs->reg_rdi);
+    }
+
+    case SYSCALL_CLONE: {
+        return p->syscall_clone(regs);
     }
 
 
@@ -691,7 +704,7 @@ pid_t proc::syscall_fork(regstate* regs) {
     ptable[child_pid]->init_user(ptable[child_pid]->pagetable_);
     memcpy(reinterpret_cast<void*>(ptable[child_pid]->regs_), reinterpret_cast<void*>(regs), sizeof(regstate));
 
-    for (vmiter it(ptable[id_], 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
+    for (vmiter it(ptable[pid_], 0); it.va() < MEMSIZE_VIRTUAL; it += PAGESIZE) 
     {
         // check if pages are user-accessible
         if (it.user() && it.va() != CONSOLE_ADDR)
@@ -768,7 +781,7 @@ pid_t proc::syscall_fork(regstate* regs) {
 
     {
         spinlock_guard guard3(family_lock);
-        ptable[child_pid]->ppid_ = id_;
+        ptable[child_pid]->ppid_ = pid_;
         ptable[pid_]->children_.push_back(ptable[child_pid]);
     }
 
@@ -1613,6 +1626,55 @@ pid_t proc::syscall_texit(int status = 0) {
     // process free the current proc object
     // Yield away
     yield_noreturn();
+}
+
+pid_t proc::syscall_clone(regstate* regs) 
+{
+    spinlock_guard ptable_guard(ptable_lock);
+
+    pid_t new_id = 0;
+
+    // find free thread slot
+    for (pid_t i = 1; i < NPROC; i++)
+    {
+        if (!ptable[i])
+        {
+            new_id = i;
+            ptable[new_id] = knew<proc>();
+            if (!ptable[new_id])
+            {
+                return E_NOMEM;
+            }
+
+            ptable[new_id]->id_ = new_id;
+            ptable[new_id]->pid_ = pid_;
+            break;
+        }
+    }
+
+    // if no free process slot found, return -1
+    if (new_id == 0)
+    {
+        return E_AGAIN;
+    }
+
+    // Set new thread's pagetable to the same as the leader thread's
+    ptable[new_id]->pagetable_ = ptable[pid_]->pagetable_;
+
+    // incrememnt the thread counter
+    ptable[pid_]->thread_counter_++;
+
+    ptable[new_id]->init_user(ptable[new_id]->pagetable_);
+
+    // copy parent's register state
+    memcpy(reinterpret_cast<void*>(ptable[new_id]->regs_), reinterpret_cast<void*>(regs), sizeof(regstate));
+
+    // set %rax so 0 gets returned to child
+    ptable[new_id]->regs_->reg_rax = 0;
+
+    // add child to a cpu
+    cpus[new_id % ncpu].enqueue(ptable[new_id]);
+    return new_id;
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
