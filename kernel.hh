@@ -7,6 +7,7 @@
 #include "k-memrange.hh"
 #include "k-vnode.hh"
 #include "k-wait.hh"
+#include "k-vga.hh"
 #include <expected>
 #if CHICKADEE_PROCESS
 #error "kernel.hh should not be used by process code."
@@ -105,6 +106,7 @@ struct __attribute__((aligned(4096))) proc {
     uintptr_t syscall_readdiskfile(regstate* reg);
     ssize_t syscall_lseek(int fd, off_t off, int origin);
     void syscall_nasty(regstate* reg);
+    void syscall_vga_test(regstate* reg);
     pid_t syscall_texit(int status);
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);

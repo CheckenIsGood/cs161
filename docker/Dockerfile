@@ -86,6 +86,7 @@ RUN apt-get -y install\
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8
 ENV EDITOR=nano
+ENV DISPLAY=docker.for.mac.host.internal:0
 
 # remove unneeded .deb files
 RUN rm -r /var/lib/apt/lists/*

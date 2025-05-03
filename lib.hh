@@ -322,6 +322,7 @@ struct bitset_view {
 #define SYSCALL_SLEEP           131
 #define SYSCALL_GETPPID         132
 #define SYSCALL_WAITPID         133
+#define SYSCALL_VGA_TEST        134
 
 // Add new system calls here.
 // Your numbers should be >=128 to avoid conflicts.
@@ -399,8 +400,11 @@ struct usage {
 #define CROW(cpos)          ((cpos) / 80)
 #define CCOL(cpos)          ((cpos) % 80)
 #define END_CPOS            (CONSOLE_ROWS * CONSOLE_COLUMNS)
+#define BUFFER_COLUMNS      320
+#define BUFFER_ROWS         200
 
 extern volatile uint16_t console[CONSOLE_ROWS * CONSOLE_COLUMNS];
+extern volatile uint8_t frame_buffer[BUFFER_ROWS * BUFFER_COLUMNS];
 
 // current position of the cursor (80 * ROW + COL)
 extern volatile int cursorpos;

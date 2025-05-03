@@ -118,6 +118,7 @@ RUN for i in addr2line c++filt cpp-13 g++-13 gcc-13 gcov-13 gcov-dump-13 gcov-to
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8
 ENV EDITOR=nano
+ENV DISPLAY=docker.for.mac.host.internal:0
 
 # remove unneeded .deb files
 RUN rm -r /var/lib/apt/lists/*

@@ -70,6 +70,7 @@ SECTIONS {
     PROVIDE(_kernel_end = .);
 
     PROVIDE(console = 0xFFFFFFFF800B8000);
+    PROVIDE(frame_buffer = 0xFFFFFFFF800A0000);
     PROVIDE(cursorpos = 0xFFFFFFFF800B8FF8);
     PROVIDE(consoletype = 0xFFFFFFFF800B8FFC);
 

@@ -303,6 +303,11 @@ inline int sys_testbuddy() {
     return 1;
 }
 
+inline int sys_vga_test() {
+    make_syscall(SYSCALL_VGA_TEST);
+    return 1;
+}
+
 // sys_clone(function, arg, stack_top)
 //    Create a new thread running `function` with `arg`, starting at
 //    stack address `stack_top`. Returns the new thread's thread ID.
@@ -312,19 +317,19 @@ inline int sys_testbuddy() {
 //
 //    We recommend you implement `sys_clone` in `u-lib.cc`, not this
 //    header file.
-pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top)
-{
+pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
+// {
 
-    register void (*fn)(void*) asm("r12") = function;
-    register void* fn_arg asm("r13") = arg;
-    register char* stack asm("r14") = stack_top;
+//     register void (*fn)(void*) asm("r12") = function;
+//     register void* fn_arg asm("r13") = arg;
+//     register char* stack asm("r14") = stack_top;
     
-    register pid_t result asm("rax");
+//     register pid_t result asm("rax");
     
 
-    _asm_("mov %0, " : : "r"(stack));
-    return result;
-}
+//     _asm_("mov %0, " : : "r"(stack));
+//     return result;
+// }
 
 // sys_texit()
 //    Exit the current thread. If this is the last thread in a process,
