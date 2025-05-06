@@ -90,6 +90,13 @@ void cpustate::schedule() {
             current_ = nullptr;
         }
 
+        if (current_ && current_->cleanup_yourself)
+        {
+            ptable[current_->id_] = nullptr;
+            delete current_;
+            current_ = nullptr;
+        }
+
         // Only the process leader will wake up the parent
         if (current_ && current_->pstate_ == proc::ps_pre_zombie)
         {

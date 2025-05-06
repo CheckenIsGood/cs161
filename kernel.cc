@@ -1716,10 +1716,17 @@ pid_t proc::syscall_texit(int status = 0) {
                     delete leader->pagetable_;
                     leader->pagetable_ = nullptr;
                 }
-                leader->status_ = status;
+                leader->status_ = 0;
                 // Mark leader to be turned into zombie by the scheduler
                 leader->pstate_ = proc::ps_pre_zombie;
                 pstate_ = proc::ps_pre_zombie;
+            }
+            else
+            {
+                if (pid_ != id_)
+                {
+                    cleanup_yourself = true;
+                }
             } 
         }
     }

@@ -64,6 +64,7 @@ struct __attribute__((aligned(4096))) proc {
     spinlock fd_table_lock;                            // should only use proc leader's
 
     std::atomic<bool> should_exit_ = false;
+    std::atomic<bool> cleanup_yourself = false;   // Only if you texit by yourself
 
     int status_;
     std::atomic<bool> sleeping_ = false;
@@ -122,7 +123,7 @@ struct __attribute__((aligned(4096))) proc {
     static int load_segment(const elf_program& ph, proc_loader& ld);
 };
 
-#define NPROC 50
+#define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 #define PROCSTACK_SIZE 4096UL
