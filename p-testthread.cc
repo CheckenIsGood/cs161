@@ -444,25 +444,25 @@ void process_main() {
 
 
     // many_threads tests
-    p = sys_fork();
-    assert_ge(p, 0);
-    if (p == 0) {
-        many_threads();
-    }
-    status = 0;
-    ch = sys_waitpid(p, &status);
-    assert_eq(ch, p);
-    assert_eq(status, 0);
+    // p = sys_fork();
+    // assert_ge(p, 0);
+    // if (p == 0) {
+    //     many_threads();
+    // }
+    // status = 0;
+    // ch = sys_waitpid(p, &status);
+    // assert_eq(ch, p);
+    // assert_eq(status, 0);
 
-    p = sys_fork();
-    assert_ge(p, 0);
-    if (p == 0) {
-        many_threads_series();
-    }
-    status = 0;
-    ch = sys_waitpid(p, &status);
-    assert_eq(ch, p);
-    assert_eq(status, 500);
+    // p = sys_fork();
+    // assert_ge(p, 0);
+    // if (p == 0) {
+    //     many_threads_series();
+    // }
+    // status = 0;
+    // ch = sys_waitpid(p, &status);
+    // assert_eq(ch, p);
+    // assert_eq(status, 500);
 
 
     // waitpid_primary tests

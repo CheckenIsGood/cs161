@@ -83,12 +83,18 @@ void cpustate::schedule() {
             current_->pstate_ = proc::ps_zombie;
             log_printf("is this happening \n");
             ptable[current_->pid_]->thread_counter_--;
+            int thread_counter = (int) ptable[current_->pid_]->thread_counter_;
+            ptable[current_->pid_]->exiting_wq.notify_all();
+            log_printf("thread counter: %i \n", thread_counter);
+            
             current_ = nullptr;
         }
 
         // Only the process leader will wake up the parent
         if (current_ && current_->pstate_ == proc::ps_pre_zombie)
         {
+            current_ = ptable[current_->pid_];
+            log_printf("should be happening last \n");
             proc* parent = nullptr;
             {
                 spinlock_guard guard2(family_lock);

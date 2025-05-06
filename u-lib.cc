@@ -79,6 +79,45 @@ void assert_fail(const char* file, int line, const char* msg,
 //    Create a new thread.
 
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top) {
-    // Your code here
-    return E_NOSYS;
+    pid_t ret;
+    register void (*fn)(void*) asm("rdi") = function;
+    register void* fn_arg asm("rsi") = arg;
+    register char* stk_top asm("rdx") = stack_top;
+    asm volatile(
+        // Save callee-saved registers
+        "pushq %%r12\n\t"
+        "pushq %%r13\n\t"
+        "pushq %%r14\n\t"
+        // Save parameters
+        "movq %%rdi, %%r12\n\t"
+        "movq %%rsi, %%r13\n\t"
+        "movq %%rdx, %%r14\n\t"
+        // Syscall number for clone
+        "movq %3, %%rax\n\t"
+        "syscall\n\t"
+        // Check return value
+        "testq %%rax, %%rax\n\t"
+        "jz 1f\n\t"
+        // Parent: restore and return
+        "popq %%r14\n\t"
+        "popq %%r13\n\t"
+        "popq %%r12\n\t"
+        "jmp 2f\n\t"
+        // Child: set up stack and call function
+        "1:\n\t"
+        "movq %%r14, %%rbp\n\t"
+        "movq %%r14, %%rsp\n\t"
+        "movq %%r13, %%rdi\n\t"
+        "call *%%r12\n\t"
+        // Call sys_texit with return value
+        "movq %%rax, %%rdi\n\t"
+        "movq %4, %%rax\n\t"
+        "syscall\n\t"
+        // Should not return
+        "2:\n\t"
+        : "=a"(ret)
+        : "D"(fn), "S"(fn_arg), "i"(SYSCALL_CLONE), "i"(SYSCALL_TEXIT), "d"(stk_top)
+        : "r12", "r13", "r14", "rcx", "r11", "memory"
+    );
+    return ret;
 }

@@ -362,12 +362,19 @@ ssize_t bbuffer::write(const char* buf, size_t sz)
 
     waiter w;
      w.wait_until(wq_, [&] () {
-         return (this->blen_ < bcapacity || read_closed_);
+         return (this->blen_ < bcapacity || read_closed_ || w.p_->should_exit_);
      }, guard);
 
     if (read_closed_) 
     {
+        log_printf("bbuffer: write to closed bbuffer\n");
         return E_PIPE;
+    }
+
+    if (w.p_->should_exit_) 
+    {
+        guard.unlock();
+        w.p_->yield_noreturn();
     }
 
     while (pos < sz && this->blen_ < bcapacity) {
@@ -401,8 +408,15 @@ ssize_t bbuffer::read(char* buf, size_t sz) {
 
     waiter w;
      w.wait_until(wq_, [&] () {
-         return (this->blen_ > 0 || write_closed_);
+        return (this->blen_ > 0 || write_closed_ || (w.p_->should_exit_));
      }, guard);
+
+    if (w.p_->should_exit_) 
+    {
+        log_printf("penis exited \n");
+        guard.unlock();
+        w.p_->yield_noreturn();
+    }
 
     size_t pos = 0;
     while (pos < sz && this->blen_ > 0) {

@@ -149,7 +149,11 @@ inline pid_t sys_getppid() {
 //    waits for any child. If `options == W_NOHANG`, returns immediately.
 inline pid_t sys_waitpid(pid_t pid, int* status = nullptr,
                          int options = 0) {
-    return make_syscall(SYSCALL_WAITPID, pid, reinterpret_cast<uintptr_t>(status), options);
+    pid_t result = make_syscall(SYSCALL_WAITPID, pid, (uintptr_t)status, options);
+    if (status) {
+        asm volatile("" : "=m" (*status) : : "memory");
+    }
+    return result;
 }
 
 // sys_read(fd, buf, sz)
@@ -320,15 +324,7 @@ inline int sys_vga_test() {
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
 // {
 
-//     register void (*fn)(void*) asm("r12") = function;
-//     register void* fn_arg asm("r13") = arg;
-//     register char* stack asm("r14") = stack_top;
     
-//     register pid_t result asm("rax");
-    
-
-//     _asm_("mov %0, " : : "r"(stack));
-//     return result;
 // }
 
 // sys_texit()

@@ -57,6 +57,7 @@ struct __attribute__((aligned(4096))) proc {
     std::atomic<int> thread_counter_ = 1;            // Number of threads in this process (only accurate for leader thread)
     // should only use proc leader's thread counter
     
+    wait_queue exiting_wq; //Should only use proc leader's
 
     pid_t pid_ = 0;                                    // Process ID
     file_descriptor* fd_table_[NUM_FD] = {nullptr};    // File descriptors - should only use proc leader's
@@ -121,7 +122,7 @@ struct __attribute__((aligned(4096))) proc {
     static int load_segment(const elf_program& ph, proc_loader& ld);
 };
 
-#define NPROC 16
+#define NPROC 50
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 #define PROCSTACK_SIZE 4096UL
