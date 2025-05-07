@@ -123,7 +123,7 @@ struct __attribute__((aligned(4096))) proc {
     static int load_segment(const elf_program& ph, proc_loader& ld);
 };
 
-#define NPROC 16
+#define NPROC 32
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 #define PROCSTACK_SIZE 4096UL

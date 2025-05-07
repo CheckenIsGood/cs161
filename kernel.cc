@@ -162,7 +162,7 @@ void start_initial_process(pid_t pid, const char* name) {
     // map frame buffer
     vmiter it(p, ktext2pa(frame_buffer));
 
-    for (int i = 0; i < 16; i++) 
+    for (int i = 0; i < 17; i++) 
     {
         it.try_map(frame_buffer + i * PAGESIZE, PTE_PWU);
     }
@@ -618,18 +618,53 @@ void proc::syscall_vga_test(regstate* reg)
     vga_set_mode(g_320x200x256);
     
     // Ensure the palette is set correctly
+    // outb(0x3C8, 0);  // Start at palette index 0
+    // for (int i = 0; i < 256; ++i) {
+    //     unsigned char r = ((i >> 5) & 0x07) * 9;   // 3 bits red
+    //     unsigned char g = ((i >> 2) & 0x07) * 9;   // 3 bits green
+    //     unsigned char b = (i & 0x03) * 21;         // 2 bits blue
+    //     outb(0x3C9, r);
+    //     outb(0x3C9, g);
+    //     outb(0x3C9, b);
+    // }
+
+    void* vga_test_image = kalloc(64000);
+
+    vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
+
+    vnode->lseek(ptable[pid_]->fd_table_[3], 0, LSEEK_SET);
+
+    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
+
+    unsigned char* color_map = (unsigned char*) vga_test_image;
+
+    int id_length = (int) color_map[0];
+
+    int color_map_offset = 18 + id_length;
+
+    int color_map_length = (int) color_map[5] | (color_map[6] << 8);
+
+    int entry_size = 24/ 8;
+
     outb(0x3C8, 0);  // Start at palette index 0
     for (int i = 0; i < 256; ++i) {
-        unsigned char r = ((i >> 5) & 0x07) * 9;   // 3 bits red
-        unsigned char g = ((i >> 2) & 0x07) * 9;   // 3 bits green
-        unsigned char b = (i & 0x03) * 21;         // 2 bits blue
+        uint8_t b = color_map[color_map_offset + i * 3 + 0] >> 2;  // VGA uses 6-bit values
+        uint8_t g = color_map[color_map_offset + i * 3 + 1] >> 2;
+        uint8_t r = color_map[color_map_offset +i * 3 + 2] >> 2;
+
         outb(0x3C9, r);
         outb(0x3C9, g);
         outb(0x3C9, b);
     }
+
+    log_printf("id length: %d\n", color_map_length);
+
+    vnode->lseek(ptable[pid_]->fd_table_[3], 822, LSEEK_SET);
+
+    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
     
     // Now copy the image data
-    // memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image2, 64000);
+    memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image, 64000);
     
     log_printf("vga test\n");
     // console_clear();

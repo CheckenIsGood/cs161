@@ -404,7 +404,7 @@ struct usage {
 #define BUFFER_ROWS         200
 
 extern volatile uint16_t console[CONSOLE_ROWS * CONSOLE_COLUMNS];
-extern volatile uint8_t frame_buffer[BUFFER_ROWS * BUFFER_COLUMNS];
+extern volatile uint8_t frame_buffer[BUFFER_ROWS * BUFFER_COLUMNS + 4096];
 
 // current position of the cursor (80 * ROW + COL)
 extern volatile int cursorpos;
