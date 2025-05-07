@@ -109,6 +109,7 @@ struct __attribute__((aligned(4096))) proc {
     ssize_t syscall_lseek(int fd, off_t off, int origin);
     void syscall_nasty(regstate* reg);
     void syscall_vga_test(regstate* reg);
+    void syscall_display(int fd);
     pid_t syscall_texit(int status);
     int syscall_getusage(regstate* reg);
     void syscall_testbuddy(regstate* reg);
@@ -147,6 +148,21 @@ struct proc_loader {
 
     virtual get_page_type get_page(size_t off) = 0;
     virtual void put_page(buffer) = 0;
+};
+
+struct tga_header {
+    int id_length;
+    uint8_t color_map_type;
+    uint8_t image_type;
+    short color_map_origin;
+    int color_map_length;
+    int color_map_depth;
+    short x_origin;
+    short y_origin;
+    int width;
+    int height;
+    int pixel_depth;
+    uint8_t image_descriptor;
 };
 
 

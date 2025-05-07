@@ -777,7 +777,6 @@ void vga_set_mode(unsigned char* regs) {
 
 /* write MISCELLANEOUS reg */
 	outb(VGA_MISC_WRITE, *regs);
-    log_printf("Value: %02x\n", regs[0]);
 	regs++;
 /* write SEQUENCER regs */
 	for(i = 0; i < VGA_NUM_SEQ_REGS; i++)

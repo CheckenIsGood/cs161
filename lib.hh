@@ -323,6 +323,7 @@ struct bitset_view {
 #define SYSCALL_GETPPID         132
 #define SYSCALL_WAITPID         133
 #define SYSCALL_VGA_TEST        134
+#define SYSCALL_DISPLAY         135
 
 // Add new system calls here.
 // Your numbers should be >=128 to avoid conflicts.

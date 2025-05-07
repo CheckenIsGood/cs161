@@ -312,6 +312,11 @@ inline int sys_vga_test() {
     return 1;
 }
 
+inline int sys_display(int fd) {
+    make_syscall(SYSCALL_DISPLAY);
+    return 1;
+}
+
 // sys_clone(function, arg, stack_top)
 //    Create a new thread running `function` with `arg`, starting at
 //    stack address `stack_top`. Returns the new thread's thread ID.

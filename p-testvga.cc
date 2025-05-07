@@ -13,31 +13,43 @@ typedef struct {
     uint8_t descriptor;
 } TGAHeader;
 
+void int_to_str(int value, char* str, int width) {
+    for (int i = width - 1; i >= 0; --i) {
+        str[i] = '0' + (value % 10);
+        value /= 10;
+    }
+    str[width] = '\0';
+}
+
 void process_main()
 {
-    int fd = sys_open("test000.tga", OF_READ | OF_WRITE);
-    assert_gt(fd, 0);
-    console_printf("%d\n", fd);
+    while (true)
+    {
+        for (int i = 0; i < 54; ++i) {
+            char filename[20] = "zanime";
+            int_to_str(i, filename + 6, 3);  // write 3-digit frame number at filename[6]
+            filename[9] = '.';
+            filename[10] = 't';
+            filename[11] = 'g';
+            filename[12] = 'a';
+            filename[13] = '\0';
+
+            int fd = sys_open(filename, OF_READ);
+            assert_gt(fd, 0);
+
+            sys_display(fd);
+            sys_close(fd);
+            
+            sys_msleep(83);
+        }
+    }
+
+    // int fd = sys_open("zanime000.tga", OF_READ | OF_WRITE);
+    // assert_gt(fd, 0);
+    // sys_display(fd);
+    // sys_close(fd);
 
 
-    uint8_t meta[51];
-
-    // sys_lseek(fd, 16, LSEEK_SET);
-    sys_read(fd, (char*) &meta, 50);
-
-    int meta_data_size = (int) meta[0];
-    int height = (int) (meta[12] | (meta[13] << 8));
-
-    console_printf("Height: %d\n", height);
-    console_printf("Meta data size: %d\n", meta_data_size);
-    // assert(header.depth == 24);
-
-    console_printf("First: %x\n", meta[0]);
-    // console_printf("Second: %hu\n", width);
-
-    // sys_lseek(fd, 822, LSEEK_SET);
-
-    sys_vga_test();
     while (true) {
     }
 }

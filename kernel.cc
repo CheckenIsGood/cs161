@@ -467,6 +467,11 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
         return 0;
     }
 
+    case SYSCALL_DISPLAY: {
+        p->syscall_display(regs->reg_rdi);
+        return 1;
+    }
+
     case SYSCALL_FORK:
         return p->syscall_fork(regs);
 
@@ -610,6 +615,95 @@ uintptr_t proc::syscall(regstate* regs)
     return val;
 }
 
+// display targa image syscall
+// also make targa parser that creates header
+// and sets the color palette accordingly
+// also takes in filedescriptor and uses it
+// to read the targa file
+// remember to free the image data
+// also targa header struct
+
+tga_header tga_parser(int fd, pid_t pid_)
+{
+
+    tga_header header;
+    void* metadata = kalloc(64000);
+
+    vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
+    vnode->lseek(ptable[pid_]->fd_table_[3], 0, LSEEK_SET);
+    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) metadata, 64000);
+
+    unsigned char* color_map = (unsigned char*) metadata;
+    header.id_length = (int) color_map[0];
+
+    // log_printf("header id length is %d\n", header.id_length);
+    header.color_map_type = (uint8_t) color_map[1];
+
+    // log_printf("header color map type is %d\n", header.color_map_type);
+    header.image_type = (uint8_t) color_map[2];
+
+    // log_printf("header image type is %d\n", header.image_type);
+    int color_map_offset = 18 + header.id_length;
+    // log_printf("color map offset is %d\n", color_map_offset);
+
+    header.color_map_origin = (short) color_map[3] | (color_map[4] << 8);
+
+    header.color_map_length = (int) color_map[5] | (color_map[6] << 8);
+
+    header.color_map_depth = (int) color_map[7];
+    // log_printf("header color map depth is %d\n", header.color_map_depth);
+
+    header.x_origin = (short) color_map[8]  | (color_map[9]  << 8);
+    header.y_origin = (short) color_map[10] | (color_map[11] << 8);
+
+    header.width = (int) color_map[12] | (color_map[13] << 8);
+    // log_printf("header width is %d\n", header.width);
+    header.height = (int) color_map[14] | (color_map[15] << 8);
+    // log_printf("header height is %d\n", header.height);
+
+    header.pixel_depth  = (int) color_map[16];
+    // log_printf("header pixel depth is %d\n", header.pixel_depth);
+    header.image_descriptor = (uint8_t) color_map[17];
+
+    outb(0x3C8, 0);  // Start at palette index 0
+    for (int i = 0; i < 256; ++i) {
+        uint8_t b = color_map[color_map_offset + i * 3 + 0] >> 2;  // VGA uses 6-bit values
+        uint8_t g = color_map[color_map_offset + i * 3 + 1] >> 2;
+        uint8_t r = color_map[color_map_offset +i * 3 + 2] >> 2;
+
+        outb(0x3C9, r);
+        outb(0x3C9, g);
+        outb(0x3C9, b);
+    }
+
+    kfree(metadata);
+    return header;
+}
+
+void proc::syscall_display(int fd)
+{
+    outb(0x3C2, 0x63);  // Misc output register - enable VGA
+
+    // Now switch to graphics mode
+    vga_set_mode(g_320x200x256);
+
+    tga_header metadata = tga_parser(fd, pid_);
+    int pixel_data_offset = 18 + metadata.id_length + (metadata.color_map_length * (metadata.color_map_depth/8));
+
+    // log_printf("pixel data offset: %d\n", pixel_data_offset);
+
+    vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
+    void* vga_test_image = kalloc(64000);
+    vnode->lseek(ptable[pid_]->fd_table_[3], pixel_data_offset, LSEEK_SET);
+    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
+    
+    // Now copy the image data
+    memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image, 64000);
+
+    kfree(vga_test_image);
+
+}
+
 void proc::syscall_vga_test(regstate* reg)
 {  
     outb(0x3C2, 0x63);  // Misc output register - enable VGA
@@ -665,35 +759,9 @@ void proc::syscall_vga_test(regstate* reg)
     
     // Now copy the image data
     memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image, 64000);
+
     
     log_printf("vga test\n");
-    // console_clear();
-    // vga_set_mode(g_320x200x256);
-
-    // for (int i = 0; i < BUFFER_ROWS * BUFFER_COLUMNS; ++i) {
-    //     frame_buffer[i] = 'A';
-    // }
-
-    // uintptr_t vga_phys = 0xA0000;
-    // uintptr_t vga_virt = 0xA0000;
-
-    // // Identity map: virtual == physical
-    // // vmiter it(this->pagetable_, vga_virt);
-    // // it.map(vga_phys, PTE_P | PTE_W);
-
-    // uintptr_t vga_phys_base = 0xA0000;
-    // size_t vga_size = 0x10000; // 64 KiB
-    // uintptr_t vga_virt_base = 0xA0000; // Identity-map for simplicity
-
-    // for (uintptr_t off = 0; off < vga_size; off += PAGESIZE) {
-    //     vmiter(pagetable_, vga_virt_base + off).map(vga_phys_base + off, PTE_P | PTE_W);
-    // }
-
-    // vga_clear_screen();
-
-    // volatile uint8_t* vga = (volatile uint8_t*) 0xA0000;
-    // vga[0] = 0x0F;
-    // log_printf("VGA[0] now: %i\n", vga[0]);
 
     log_printf("vga test\n");
 }
