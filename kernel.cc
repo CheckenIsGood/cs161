@@ -616,13 +616,7 @@ uintptr_t proc::syscall(regstate* regs)
     return val;
 }
 
-// display targa image syscall
-// also make targa parser that creates header
-// and sets the color palette accordingly
-// also takes in filedescriptor and uses it
-// to read the targa file
-// remember to free the image data
-// also targa header struct
+// Parse VGA file and return header (also set up color palette of image by reading color map)
 
 tga_header tga_parser(int fd, pid_t pid_)
 {
@@ -699,6 +693,7 @@ void proc::syscall_display(int fd)
 
 }
 
+// Basic VGA test
 void proc::syscall_vga_test(regstate* reg)
 {  
     outb(0x3C2, 0x63);  // Misc output register - enable VGA
@@ -707,47 +702,18 @@ void proc::syscall_vga_test(regstate* reg)
     vga_set_mode(g_320x200x256);
     
     // Ensure the palette is set correctly
-    // outb(0x3C8, 0);  // Start at palette index 0
-    // for (int i = 0; i < 256; ++i) {
-    //     unsigned char r = ((i >> 5) & 0x07) * 9;   // 3 bits red
-    //     unsigned char g = ((i >> 2) & 0x07) * 9;   // 3 bits green
-    //     unsigned char b = (i & 0x03) * 21;         // 2 bits blue
-    //     outb(0x3C9, r);
-    //     outb(0x3C9, g);
-    //     outb(0x3C9, b);
-    // }
-
-    void* vga_test_image = kalloc(64000);
-
-    vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
-
-    vnode->lseek(ptable[pid_]->fd_table_[3], 0, LSEEK_SET);
-
-    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
-
-    unsigned char* color_map = (unsigned char*) vga_test_image;
-
-    int id_length = (int) color_map[0];
-
-    int color_map_offset = 18 + id_length;
-
     outb(0x3C8, 0);  // Start at palette index 0
     for (int i = 0; i < 256; ++i) {
-        uint8_t b = color_map[color_map_offset + i * 3 + 0] >> 2;  // VGA uses 6-bit values
-        uint8_t g = color_map[color_map_offset + i * 3 + 1] >> 2;
-        uint8_t r = color_map[color_map_offset +i * 3 + 2] >> 2;
-
+        unsigned char r = ((i >> 5) & 0x07) * 9;   // 3 bits red
+        unsigned char g = ((i >> 2) & 0x07) * 9;   // 3 bits green
+        unsigned char b = (i & 0x03) * 21;         // 2 bits blue
         outb(0x3C9, r);
         outb(0x3C9, g);
         outb(0x3C9, b);
     }
 
-    vnode->lseek(ptable[pid_]->fd_table_[3], 822, LSEEK_SET);
-
-    ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
-    
-    // Now copy the image data
-    memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image, 64000);
+    vga_clear_screen();
+    vga_plot_pixel(10, 10, COLOR_WHITE);
 }
 
 void proc::syscall_testbuddy(regstate* reg)

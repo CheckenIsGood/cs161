@@ -103,8 +103,9 @@ void cpustate::schedule() {
         // Only the process leader will wake up the parent
         if (current_ && current_->pstate_ == proc::ps_pre_zombie)
         {
+            // make sure leader thread is being modified here because last exiting thread
+            // can also be made into pre_zombie
             current_ = ptable[current_->pid_];
-            log_printf("should be happening last \n");
             proc* parent = nullptr;
             {
                 spinlock_guard guard2(family_lock);
