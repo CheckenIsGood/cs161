@@ -16,9 +16,9 @@
 #define	VGA_MISC_READ		0x3CC
 #define VGA_GC_INDEX 		0x3CE
 #define VGA_GC_DATA 		0x3CF
-/*			COLOR emulation		MONO emulation */
-#define VGA_CRTC_INDEX		0x3D4		/* 0x3B4 */
-#define VGA_CRTC_DATA		0x3D5		/* 0x3B5 */
+
+#define VGA_CRTC_INDEX		0x3D4		
+#define VGA_CRTC_DATA		0x3D5		
 #define	VGA_INSTAT_READ		0x3DA
 
 #define	VGA_NUM_SEQ_REGS	5
@@ -39,15 +39,7 @@
     outb(VGA_GC_DATA, (p) ); \
     outb(VGA_SEQ_INDEX, 2); \
     outb(VGA_SEQ_DATA, 1 << (p) );
-/*****************************************************************************
-VGA REGISTER DUMPS FOR VARIOUS TEXT MODES
 
-()=to do
-	40x25	(40x30)	40x50	(40x60)
-	(45x25)	(45x30)	(45x50)	(45x60)
-	80x25	(80x30)	80x50	(80x60)
-	(90x25)	90x30	(90x50)	90x60
-*****************************************************************************/
 void vga_set_mode(unsigned char* mode);
 
 #endif

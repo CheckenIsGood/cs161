@@ -55,12 +55,13 @@ struct nasty
     }
 };
 
+// If you want to individually plot a pixel
 void vga_plot_pixel(int x, int y, unsigned short color) {
-    uintptr_t VGA_ADDRESS = 0xA0000;
 	unsigned short offset = x + 320 * y;
 	frame_buffer[offset] = color;
 }
 
+// Completely wipe image from screen
 void vga_clear_screen() {
     for (int i = 0; i < 320; ++i) {
         for (int j = 0; j < 200; ++j) {
@@ -164,7 +165,7 @@ void start_initial_process(pid_t pid, const char* name) {
 
     for (int i = 0; i < 17; i++) 
     {
-        it.try_map(frame_buffer + i * PAGESIZE, PTE_PWU);
+        it.map(frame_buffer + i * PAGESIZE, PTE_PWU);
     }
 
     // add to process table (requires lock in case another CPU is already
@@ -353,6 +354,7 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
             spinlock_guard guard(ptable_lock);
             int status = regs->reg_rdi;
 
+            // If the thread is already exiting, just go to schedule
             if (p->should_exit_)
             {
                 guard.unlock();
@@ -370,19 +372,19 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
                 }
             }
 
+            // If the thread is not the leader, decrement the leader's thread counter
             if (p->id_ != p->pid_)
             {
                 ptable[p->pid_]->thread_counter_--;
             }
 
+            // Wait for all the other threads to exit
             waiter w;
             w.wait_until(ptable[p->pid_]->exiting_wq, [&] () 
             {
-                log_printf("spinning? \n");
                 return ptable[p->pid_]->thread_counter_ <= 1;
             }, guard);
 
-            log_printf("am i happening? \n");
 
             proc* leader = ptable[p->pid_];
             leader->status_ = status;
@@ -434,7 +436,6 @@ uintptr_t syscall_unchecked(regstate* regs, proc* p) {
                 delete leader->pagetable_;
                 leader->pagetable_ = nullptr;
             }
-            log_printf("second to last \n");
             leader->status_ = status;
             // Mark leader to be turned into zombie by the scheduler
             leader->pstate_ = proc::ps_pre_zombie;  
@@ -629,6 +630,7 @@ tga_header tga_parser(int fd, pid_t pid_)
     tga_header header;
     void* metadata = kalloc(64000);
 
+    // Read the metadata
     vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
     vnode->lseek(ptable[pid_]->fd_table_[3], 0, LSEEK_SET);
     ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) metadata, 64000);
@@ -636,35 +638,30 @@ tga_header tga_parser(int fd, pid_t pid_)
     unsigned char* color_map = (unsigned char*) metadata;
     header.id_length = (int) color_map[0];
 
-    // log_printf("header id length is %d\n", header.id_length);
+
+    // Read colormap data
     header.color_map_type = (uint8_t) color_map[1];
-
-    // log_printf("header color map type is %d\n", header.color_map_type);
     header.image_type = (uint8_t) color_map[2];
-
-    // log_printf("header image type is %d\n", header.image_type);
     int color_map_offset = 18 + header.id_length;
-    // log_printf("color map offset is %d\n", color_map_offset);
 
     header.color_map_origin = (short) color_map[3] | (color_map[4] << 8);
 
     header.color_map_length = (int) color_map[5] | (color_map[6] << 8);
 
     header.color_map_depth = (int) color_map[7];
-    // log_printf("header color map depth is %d\n", header.color_map_depth);
 
     header.x_origin = (short) color_map[8]  | (color_map[9]  << 8);
     header.y_origin = (short) color_map[10] | (color_map[11] << 8);
 
+    // Read image data
     header.width = (int) color_map[12] | (color_map[13] << 8);
-    // log_printf("header width is %d\n", header.width);
     header.height = (int) color_map[14] | (color_map[15] << 8);
-    // log_printf("header height is %d\n", header.height);
 
     header.pixel_depth  = (int) color_map[16];
-    // log_printf("header pixel depth is %d\n", header.pixel_depth);
     header.image_descriptor = (uint8_t) color_map[17];
 
+
+    // Parse the color map and set the palette
     outb(0x3C8, 0);  // Start at palette index 0
     for (int i = 0; i < 256; ++i) {
         uint8_t b = color_map[color_map_offset + i * 3 + 0] >> 2;  // VGA uses 6-bit values
@@ -689,8 +686,6 @@ void proc::syscall_display(int fd)
 
     tga_header metadata = tga_parser(fd, pid_);
     int pixel_data_offset = 18 + metadata.id_length + (metadata.color_map_length * (metadata.color_map_depth/8));
-
-    // log_printf("pixel data offset: %d\n", pixel_data_offset);
 
     vnode_disk* vnode = static_cast<vnode_disk*>(ptable[pid_]->fd_table_[3]->vnode_);
     void* vga_test_image = kalloc(64000);
@@ -736,10 +731,6 @@ void proc::syscall_vga_test(regstate* reg)
 
     int color_map_offset = 18 + id_length;
 
-    int color_map_length = (int) color_map[5] | (color_map[6] << 8);
-
-    int entry_size = 24/ 8;
-
     outb(0x3C8, 0);  // Start at palette index 0
     for (int i = 0; i < 256; ++i) {
         uint8_t b = color_map[color_map_offset + i * 3 + 0] >> 2;  // VGA uses 6-bit values
@@ -751,19 +742,12 @@ void proc::syscall_vga_test(regstate* reg)
         outb(0x3C9, b);
     }
 
-    log_printf("id length: %d\n", color_map_length);
-
     vnode->lseek(ptable[pid_]->fd_table_[3], 822, LSEEK_SET);
 
     ptable[pid_]->fd_table_[3]->vnode_->read(ptable[pid_]->fd_table_[3], (uintptr_t) vga_test_image, 64000);
     
     // Now copy the image data
     memcpy(reinterpret_cast<void*>(pa2ktext(0xA0000)), vga_test_image, 64000);
-
-    
-    log_printf("vga test\n");
-
-    log_printf("vga test\n");
 }
 
 void proc::syscall_testbuddy(regstate* reg)
@@ -1307,10 +1291,6 @@ int proc::syscall_waitpid(proc* cur, pid_t pid, int* status, int options)
                 child = a;
                 if (child->pstate_ == proc::ps_zombie)
                 {
-                    if (pid == 0)
-                    {
-                        log_printf("cleaner \n");
-                    }
                     found = true;
                     break;
                 }
@@ -1394,9 +1374,7 @@ pid_t proc::kill_zombie(proc* zombie, int* status)
     // update status
     if (status != nullptr)
     {
-        log_printf("status: %d\n", zombie->status_);
         *status = zombie->status_;
-        log_printf("returned status %d\n", *status);
     }
 
     pid_t pid = zombie->pid_;
@@ -1760,6 +1738,8 @@ pid_t proc::syscall_texit(int status = 0) {
 
     {
         spinlock_guard guard(ptable_lock);
+
+        // Make sure the thread hasn't exited yet
         if (pstate_ != proc::ps_thread_leader_exited && pstate_ != proc::ps_zombie && pstate_ != proc::ps_pre_zombie &&
         should_exit_ == false)
         {
@@ -1770,6 +1750,7 @@ pid_t proc::syscall_texit(int status = 0) {
             }
             else
             {
+                // If this is not the thread leader, change its state to zombie
                 pstate_ = proc::ps_zombie;
             }
 
@@ -1777,8 +1758,9 @@ pid_t proc::syscall_texit(int status = 0) {
             assert(leader);
             assert(leader->pid_ == leader->id_);
 
-            log_printf("exiting \n");
             leader->thread_counter_--;
+
+            // If the thread counter is 0, implicitly exit the process
             if (leader->thread_counter_ == 0) 
             {
                 // Close all file descriptors
@@ -1820,12 +1802,15 @@ pid_t proc::syscall_texit(int status = 0) {
                     leader->pagetable_ = nullptr;
                 }
                 leader->status_ = 0;
+
                 // Mark leader to be turned into zombie by the scheduler
                 leader->pstate_ = proc::ps_pre_zombie;
                 pstate_ = proc::ps_pre_zombie;
             }
             else
             {
+
+                // Clean up the current process
                 if (pid_ != id_)
                 {
                     cleanup_yourself = true;
@@ -1835,7 +1820,7 @@ pid_t proc::syscall_texit(int status = 0) {
     }
 
     // This prevents the "The current stack page must not be free" condition
-    // Because only after the leader becomes pre_zombie can another
+    // Because only after the leader becomes pre_zombie/gets zombified in the scheduler can another
     // process free the current proc object
     // Yield away
     yield_noreturn();
@@ -1865,7 +1850,7 @@ pid_t proc::syscall_clone(regstate* regs)
         }
     }
 
-    // if no free process slot found, return -1
+    // if no free thread slot found, return -1
     if (new_id == 0)
     {
         return E_AGAIN;
@@ -1876,10 +1861,6 @@ pid_t proc::syscall_clone(regstate* regs)
 
     // incrememnt the thread counter
     ptable[pid_]->thread_counter_++;
-
-    int counter = (int) ptable[pid_]->thread_counter_;
-
-    log_printf("created thread_counter: %i \n", counter);
 
     ptable[new_id]->init_user(ptable[new_id]->pagetable_);
 

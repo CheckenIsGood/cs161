@@ -775,39 +775,44 @@ static unsigned char g_8x16_font[4096] =
 void vga_set_mode(unsigned char* regs) {
     unsigned i;
 
-/* write MISCELLANEOUS reg */
+	// write MISCELLANEOUS reg
 	outb(VGA_MISC_WRITE, *regs);
 	regs++;
-/* write SEQUENCER regs */
+	// write SEQUENCER regs
 	for(i = 0; i < VGA_NUM_SEQ_REGS; i++)
 	{
 		outb(VGA_SEQ_INDEX, i);
 		outb(VGA_SEQ_DATA, *regs);
 		regs++;
 	}
-/* unlock CRTC registers */
+
+	// unlock CRTC registers
 	outb(VGA_CRTC_INDEX, 0x03);
 	outb(VGA_CRTC_DATA, inb(VGA_CRTC_DATA) | 0x80);
 	outb(VGA_CRTC_INDEX, 0x11);
 	outb(VGA_CRTC_DATA, inb(VGA_CRTC_DATA) & ~0x80);
-/* make sure they remain unlocked */
 	regs[0x03] |= 0x80;
 	regs[0x11] &= ~0x80;
-/* write CRTC regs */
+    
+
+	// write CRTC regs
 	for(i = 0; i < VGA_NUM_CRTC_REGS; i++)
 	{
 		outb(VGA_CRTC_INDEX, i);
 		outb(VGA_CRTC_DATA, *regs);
 		regs++;
 	}
-/* write GRAPHICS CONTROLLER regs */
+
+    // write GRAPHICS CONTROLLER regs
 	for(i = 0; i < VGA_NUM_GC_REGS; i++)
 	{
 		outb(VGA_GC_INDEX, i);
 		outb(VGA_GC_DATA, *regs);
 		regs++;
 	}
-/* write ATTRIBUTE CONTROLLER regs */
+
+
+    // write ATTRIBUTE CONTROLLER regs
 	for(i = 0; i < VGA_NUM_AC_REGS; i++)
 	{
 		(void)inb(VGA_INSTAT_READ);
@@ -815,7 +820,7 @@ void vga_set_mode(unsigned char* regs) {
 		outb(VGA_AC_WRITE, *regs);
 		regs++;
 	}
-/* lock 16-color palette and unblank display */
+    // lock 16-color palette and unblank display
 	(void)inb(VGA_INSTAT_READ);
 	outb(VGA_AC_INDEX, 0x20);
 

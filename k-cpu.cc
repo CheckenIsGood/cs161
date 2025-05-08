@@ -78,18 +78,21 @@ void cpustate::schedule() {
     {
         spinlock_guard guard(ptable_lock);
 
+
+        // set up thread for cleanup in waitpid
         if (current_ && current_->should_exit_)
         {
             current_->pstate_ = proc::ps_zombie;
-            log_printf("is this happening \n");
             ptable[current_->pid_]->thread_counter_--;
-            int thread_counter = (int) ptable[current_->pid_]->thread_counter_;
+
+            // notify exiting thread in the exiting queue
             ptable[current_->pid_]->exiting_wq.notify_all();
-            log_printf("thread counter: %i \n", thread_counter);
             
+            // avoid conflicts
             current_ = nullptr;
         }
 
+        // clean up the current thread if it has exited
         if (current_ && current_->cleanup_yourself)
         {
             ptable[current_->id_] = nullptr;
